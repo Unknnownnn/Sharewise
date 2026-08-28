@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "api": "node api.mjs",
+    "start": "node api.mjs",
     "test:openrouter": "node scripts/test-openrouter.mjs",
     "dev:all": "concurrently \"npm run api\" \"npm run dev\"",
     "build": "tsc -b && vite build",
