@@ -1571,3 +1571,167 @@ h3 {
 .finalize-row:last-child {
   border-bottom: none;
 }
+
+/* --- User Account & Cloud Sync Styles --- */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-btn-pill {
+  border: 1px solid #d4cec2;
+  background: #faf7f0;
+  color: #25242b;
+  padding: 6px 13px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.auth-btn-pill:hover {
+  border-color: #ef765c;
+  color: #ef765c;
+  background: #fff;
+}
+
+.cloud-icon-spin {
+  font-size: 13px;
+  color: #ef765c;
+}
+
+.sync-status-badge {
+  font-size: 10px;
+  color: #43844d;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.auth-modal-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #ded9ce;
+  padding-bottom: 10px;
+}
+
+.auth-tab-btn {
+  border: 0;
+  background: transparent;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #8d887e;
+  cursor: pointer;
+  position: relative;
+}
+
+.auth-tab-btn.active {
+  color: #25242b;
+}
+
+.auth-tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: -11px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #ef765c;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.remember-me-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #5c574e;
+  cursor: pointer;
+  user-select: none;
+}
+
+.remember-me-label input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: #ef765c;
+  cursor: pointer;
+}
+
+.auth-notice-box {
+  background: #fdfbf7;
+  border: 1px solid #e7e2d8;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: #655f54;
+  line-height: 1.4;
+  margin-top: 6px;
+  border-radius: 4px;
+}
+
+.auth-error-banner {
+  background: #fff0ed;
+  border-left: 3px solid #ef765c;
+  color: #c44733;
+  padding: 8px 12px;
+  font-size: 11px;
+}
+
+.auth-switch-link {
+  border: 0;
+  background: transparent;
+  color: #8d887e;
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  margin-top: 10px;
+}
+
+.auth-switch-link:hover {
+  color: #ef765c;
+  text-decoration: underline;
+}
+
+.account-section-banner {
+  background: #fdfbf7;
+  border: 1px solid #e7e2d8;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.account-section-user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.account-logout-btn {
+  border: 1px solid #d4cec2;
+  background: #fff;
+  color: #655f54;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.account-logout-btn:hover {
+  border-color: #c44733;
+  color: #c44733;
+}

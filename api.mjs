@@ -1,6 +1,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { config } from 'dotenv'
 
@@ -9,6 +10,68 @@ config()
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const distDir = path.join(__dirname, 'dist')
+const dataDir = path.join(__dirname, 'data')
+const dbFile = path.join(dataDir, 'smartsplit_db.json')
+
+// Ensure data directory exists
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true })
+}
+
+function loadDb() {
+  try {
+    if (fs.existsSync(dbFile)) {
+      const parsed = JSON.parse(fs.readFileSync(dbFile, 'utf8'))
+      if (parsed && typeof parsed === 'object') {
+        return {
+          users: parsed.users || {},
+          sessions: parsed.sessions || {},
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to read smartsplit_db.json, initializing fresh db:', e)
+  }
+  return { users: {}, sessions: {} }
+}
+
+const db = loadDb()
+
+function saveDb() {
+  try {
+    fs.writeFileSync(dbFile, JSON.stringify(db, null, 2), 'utf8')
+  } catch (e) {
+    console.error('Failed to save smartsplit_db.json:', e)
+  }
+}
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex')
+}
+
+function getAuthenticatedUser(request) {
+  const authHeader = request.headers.authorization || ''
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim()
+  if (!token || !db.sessions[token]) return null
+
+  const session = db.sessions[token]
+  if (Date.now() > session.expiresAt) {
+    delete db.sessions[token]
+    saveDb()
+    return null
+  }
+
+  const user = db.users[session.usernameLower]
+  if (!user) return null
+  return { token, user }
+}
+
+async function readJsonBody(request) {
+  let raw = ''
+  for await (const chunk of request) raw += chunk
+  if (!raw.trim()) return {}
+  return JSON.parse(raw)
+}
 
 const port = Number(process.env.PORT || process.env.API_PORT || 80)
 const host = process.env.HOST || '0.0.0.0'
@@ -36,7 +99,7 @@ function sendJson(response, status, body, requestOrigin = '*') {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': requestOrigin || '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   })
   response.end(JSON.stringify(body))
 }
@@ -273,7 +336,7 @@ const server = http.createServer(async (request, response) => {
     response.writeHead(204, {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     })
     return response.end()
   }
@@ -283,15 +346,145 @@ const server = http.createServer(async (request, response) => {
     return sendJson(response, 200, { status: 'ok', time: new Date().toISOString() }, origin)
   }
 
+  // Auth: Register
+  if (request.url === '/api/auth/register') {
+    if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' }, origin)
+    try {
+      const { username, password, rememberMe, initialData } = await readJsonBody(request)
+      if (!username || typeof username !== 'string' || username.trim().length < 3) {
+        return sendJson(response, 400, { error: 'Username must be at least 3 characters' }, origin)
+      }
+      if (!password || typeof password !== 'string' || password.length < 4) {
+        return sendJson(response, 400, { error: 'Password must be at least 4 characters' }, origin)
+      }
+
+      const usernameLower = username.trim().toLowerCase()
+      if (db.users[usernameLower]) {
+        return sendJson(response, 409, { error: 'An account with this username already exists' }, origin)
+      }
+
+      const salt = crypto.randomBytes(16).toString('hex')
+      const passwordHash = hashPassword(password, salt)
+      const token = crypto.randomBytes(32).toString('hex')
+      // 90 days if rememberMe, 24 hours if not
+      const expiresAt = Date.now() + (rememberMe ? 90 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000)
+
+      db.users[usernameLower] = {
+        id: 'usr_' + Date.now(),
+        username: username.trim(),
+        passwordHash,
+        salt,
+        createdAt: new Date().toISOString(),
+        data: initialData && typeof initialData === 'object' ? initialData : null,
+      }
+
+      db.sessions[token] = {
+        usernameLower,
+        expiresAt,
+      }
+      saveDb()
+
+      return sendJson(response, 200, {
+        user: { id: db.users[usernameLower].id, username: db.users[usernameLower].username },
+        token,
+        data: db.users[usernameLower].data,
+      }, origin)
+    } catch (e) {
+      return sendJson(response, 500, { error: e instanceof Error ? e.message : 'Registration failed' }, origin)
+    }
+  }
+
+  // Auth: Login
+  if (request.url === '/api/auth/login') {
+    if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' }, origin)
+    try {
+      const { username, password, rememberMe } = await readJsonBody(request)
+      if (!username || !password) {
+        return sendJson(response, 400, { error: 'Username and password are required' }, origin)
+      }
+
+      const usernameLower = username.trim().toLowerCase()
+      const user = db.users[usernameLower]
+      if (!user) {
+        return sendJson(response, 401, { error: 'Invalid username or password' }, origin)
+      }
+
+      const testHash = hashPassword(password, user.salt)
+      if (testHash !== user.passwordHash) {
+        return sendJson(response, 401, { error: 'Invalid username or password' }, origin)
+      }
+
+      const token = crypto.randomBytes(32).toString('hex')
+      const expiresAt = Date.now() + (rememberMe ? 90 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000)
+      db.sessions[token] = {
+        usernameLower,
+        expiresAt,
+      }
+      saveDb()
+
+      return sendJson(response, 200, {
+        user: { id: user.id, username: user.username },
+        token,
+        data: user.data,
+      }, origin)
+    } catch (e) {
+      return sendJson(response, 500, { error: e instanceof Error ? e.message : 'Login failed' }, origin)
+    }
+  }
+
+  // Auth: Get Current User Profile (/api/auth/me)
+  if (request.url === '/api/auth/me') {
+    const auth = getAuthenticatedUser(request)
+    if (!auth) return sendJson(response, 401, { error: 'Unauthorized' }, origin)
+    return sendJson(response, 200, {
+      user: { id: auth.user.id, username: auth.user.username },
+      data: auth.user.data,
+    }, origin)
+  }
+
+  // Auth: Logout
+  if (request.url === '/api/auth/logout') {
+    const authHeader = request.headers.authorization || ''
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim()
+    if (token && db.sessions[token]) {
+      delete db.sessions[token]
+      saveDb()
+    }
+    return sendJson(response, 200, { success: true }, origin)
+  }
+
+  // Cloud Sync: Get or update user data across devices
+  if (request.url === '/api/user/sync') {
+    const auth = getAuthenticatedUser(request)
+    if (!auth) return sendJson(response, 401, { error: 'Unauthorized' }, origin)
+
+    if (request.method === 'GET') {
+      return sendJson(response, 200, { data: auth.user.data }, origin)
+    }
+
+    if (request.method === 'POST') {
+      try {
+        const payload = await readJsonBody(request)
+        if (payload && typeof payload === 'object') {
+          auth.user.data = payload
+          saveDb()
+          return sendJson(response, 200, { success: true, savedAt: new Date().toISOString() }, origin)
+        }
+        return sendJson(response, 400, { error: 'Invalid sync payload' }, origin)
+      } catch (e) {
+        return sendJson(response, 500, { error: e instanceof Error ? e.message : 'Sync failed' }, origin)
+      }
+    }
+    return sendJson(response, 405, { error: 'Method not allowed' }, origin)
+  }
+
   // OCR API endpoint
   if (request.url === '/api/ocr') {
     if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' }, origin)
     if (!process.env.OPENROUTER_API_KEY) return sendJson(response, 500, { error: 'OPENROUTER_API_KEY is missing. Add it to .env and restart the API.' }, origin)
 
     try {
-      let raw = ''
-      for await (const chunk of request) raw += chunk
-      const input = JSON.parse(raw)
+      const input = await readJsonBody(request)
       if (!input.image || !input.mimeType) return sendJson(response, 400, { error: 'image and mimeType are required' }, origin)
       if (input.image.length > 12_000_000) return sendJson(response, 413, { error: 'Image is too large. Use an image under 9 MB.' }, origin)
 

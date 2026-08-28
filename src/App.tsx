@@ -53,6 +53,11 @@ type FinalizedSplit = {
   }>
 }
 
+type User = {
+  id: string
+  username: string
+}
+
 const colors = ['#ef765c', '#4967b0', '#d6a43a', '#6c9d73', '#9b6db0', '#3f9b9d', '#c66b91']
 const blankCharges: Charges = { tax: null, delivery: null, other: null, subtotal: null, total: null, other_breakdown: [] }
 const money = (value: number) => `₹${value.toFixed(2)}`
@@ -65,9 +70,6 @@ function computeGroupInitials(people: Person[]): Record<number, string> {
   const result: Record<number, string> = {}
   if (!people || people.length === 0) return result
 
-  // First pass: standard candidate for each person
-  // Multiple words: 1st letter of first word + 1st letter of last word
-  // Single word: 1st letter
   const candidates: Record<number, string> = {}
   people.forEach((p) => {
     const words = p.name.trim().split(/\s+/).map(cleanWord).filter(Boolean)
@@ -80,7 +82,6 @@ function computeGroupInitials(people: Person[]): Record<number, string> {
     }
   })
 
-  // Count occurrences of candidate
   const countByCand: Record<string, number> = {}
   Object.values(candidates).forEach((c) => {
     countByCand[c] = (countByCand[c] || 0) + 1
@@ -97,7 +98,6 @@ function computeGroupInitials(people: Person[]): Record<number, string> {
     }
   })
 
-  // Disambiguate collisions (e.g. Aarav vs Aditi -> AA vs AD)
   Object.values(collidingCandMap).forEach((group) => {
     const level1: Record<number, string> = {}
     group.forEach((p) => {
@@ -291,9 +291,9 @@ const initialGroups = (): Group[] => {
   const legacyPeople = legacyPeopleStr
     ? (JSON.parse(legacyPeopleStr) as Person[])
     : [
-        { id: 1, name: 'Aarav Shah', color: colors[0] },
-        { id: 2, name: 'Aditi', color: colors[1] },
-      ]
+      { id: 1, name: 'John Doe', color: colors[0] },
+      { id: 2, name: 'Jane Doe', color: colors[1] },
+    ]
   const legacyGroupName = localStorage.getItem('smartsplit-group') || 'Housemates'
 
   return [
@@ -307,6 +307,33 @@ const initialGroups = (): Group[] => {
 }
 
 function App() {
+  // User Authentication & Cloud Sync
+  const [user, setUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('smartsplit-user')
+    if (saved) {
+      try {
+        return JSON.parse(saved) as User
+      } catch {
+        // ignore
+      }
+    }
+    return null
+  })
+
+  const [token, setToken] = useState<string | null>(() => {
+    return localStorage.getItem('smartsplit-token') || sessionStorage.getItem('smartsplit-token')
+  })
+
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle')
+  const [authModalOpen, setAuthModalOpen] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [authUsername, setAuthUsername] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(true)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [authLoading, setAuthLoading] = useState(false)
+
+  // Groups and Settings
   const [groups, setGroups] = useState<Group[]>(initialGroups)
   const [activeGroupId, setActiveGroupId] = useState<string>(() => {
     const savedActive = localStorage.getItem('smartsplit-active-group-id')
@@ -366,6 +393,47 @@ function App() {
   const [finalizeModalOpen, setFinalizeModalOpen] = useState(false)
   const [splitTitleInput, setSplitTitleInput] = useState('')
 
+  // Check auth session on startup
+  useEffect(() => {
+    if (!token) return
+    fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+      .then(
+        (payload: {
+          user: User
+          data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
+        }) => {
+          setUser(payload.user)
+          localStorage.setItem('smartsplit-user', JSON.stringify(payload.user))
+          if (payload.data) {
+            if (Array.isArray(payload.data.groups) && payload.data.groups.length > 0) {
+              setGroups(payload.data.groups)
+              localStorage.setItem('smartsplit-groups', JSON.stringify(payload.data.groups))
+            }
+            if (payload.data.activeGroupId) {
+              setActiveGroupId(payload.data.activeGroupId)
+              localStorage.setItem('smartsplit-active-group-id', payload.data.activeGroupId)
+            }
+            if (Array.isArray(payload.data.history)) {
+              setHistory(payload.data.history)
+              localStorage.setItem('smartsplit-history', JSON.stringify(payload.data.history))
+            }
+          }
+          setSyncStatus('synced')
+        },
+      )
+      .catch(() => {
+        setToken(null)
+        setUser(null)
+        localStorage.removeItem('smartsplit-token')
+        localStorage.removeItem('smartsplit-user')
+        sessionStorage.removeItem('smartsplit-token')
+      })
+  }, [token])
+
+  // Save to local storage
   useEffect(() => {
     localStorage.setItem('smartsplit-groups', JSON.stringify(groups))
   }, [groups])
@@ -377,6 +445,38 @@ function App() {
   useEffect(() => {
     localStorage.setItem('smartsplit-history', JSON.stringify(history))
   }, [history])
+
+  // Cloud sync debounced save across devices
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (!token || !user) return
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+
+    syncTimeoutRef.current = setTimeout(() => {
+      setSyncStatus('syncing')
+      fetch('/api/user/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          groups,
+          activeGroupId,
+          history,
+        }),
+      })
+        .then((res) => {
+          if (res.ok) setSyncStatus('synced')
+          else setSyncStatus('error')
+        })
+        .catch(() => setSyncStatus('error'))
+    }, 1200)
+
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
+    }
+  }, [groups, activeGroupId, history, token, user])
 
   const values = {
     tax: editedCharges.tax === '' ? null : Number(editedCharges.tax),
@@ -533,8 +633,8 @@ function App() {
       name: trimmed,
       isDefault: false,
       people: [
-        { id: 1, name: 'Aarav Shah', color: colors[0] },
-        { id: 2, name: 'Aditi', color: colors[1] },
+        { id: 1, name: 'John Doe', color: colors[0] },
+        { id: 2, name: 'Jane Doe', color: colors[1] },
       ],
     }
     setGroups((current) => [...current, created])
@@ -569,9 +669,9 @@ function App() {
       current.map((g) =>
         g.id === activeGroup.id
           ? {
-              ...g,
-              people: g.people.map((p) => (p.id === id ? { ...p, name } : p)),
-            }
+            ...g,
+            people: g.people.map((p) => (p.id === id ? { ...p, name } : p)),
+          }
           : g,
       ),
     )
@@ -684,6 +784,108 @@ function App() {
     setHistory((current) => current.filter((s) => s.id !== id))
   }
 
+  // Authentication Handlers
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAuthError(null)
+    setAuthLoading(true)
+
+    const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register'
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: authUsername.trim(),
+          password: authPassword,
+          rememberMe,
+          initialData: { groups, activeGroupId, history },
+        }),
+      })
+
+      const data = (await res.json()) as {
+        user?: User
+        token?: string
+        error?: string
+        data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Authentication failed')
+      }
+
+      if (data.user && data.token) {
+        if (rememberMe) {
+          localStorage.setItem('smartsplit-token', data.token)
+          localStorage.setItem('smartsplit-user', JSON.stringify(data.user))
+        } else {
+          sessionStorage.setItem('smartsplit-token', data.token)
+          localStorage.removeItem('smartsplit-token')
+          localStorage.setItem('smartsplit-user', JSON.stringify(data.user))
+        }
+
+        setToken(data.token)
+        setUser(data.user)
+
+        if (data.data) {
+          if (Array.isArray(data.data.groups) && data.data.groups.length > 0) {
+            setGroups(data.data.groups)
+          }
+          if (data.data.activeGroupId) {
+            setActiveGroupId(data.data.activeGroupId)
+          }
+          if (Array.isArray(data.data.history)) {
+            setHistory(data.data.history)
+          }
+        }
+
+        setSyncStatus('synced')
+        setAuthModalOpen(false)
+        setAuthUsername('')
+        setAuthPassword('')
+      }
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Authentication failed')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleLogout = () => {
+    if (token) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => { })
+    }
+    setToken(null)
+    setUser(null)
+    setSyncStatus('idle')
+    localStorage.removeItem('smartsplit-token')
+    localStorage.removeItem('smartsplit-user')
+    sessionStorage.removeItem('smartsplit-token')
+
+    // Wipe private splits and groups from browser so they don't show when logged out
+    localStorage.removeItem('smartsplit-history')
+    localStorage.removeItem('smartsplit-groups')
+    localStorage.removeItem('smartsplit-active-group-id')
+    setHistory([])
+    const freshGroups: Group[] = [
+      {
+        id: 'default',
+        name: 'Housemates',
+        isDefault: true,
+        people: [
+          { id: 1, name: 'John Doe', color: colors[0] },
+          { id: 2, name: 'Jane Doe', color: colors[1] },
+        ],
+      },
+    ]
+    setGroups(freshGroups)
+    setActiveGroupId('default')
+    resetCurrentBill()
+  }
+
   const filteredHistory = useMemo(() => {
     return history.filter((split) => {
       const matchesGroup = historyFilterGroup === 'all' || split.groupId === historyFilterGroup
@@ -722,12 +924,33 @@ function App() {
             Group: <strong>{groupName}</strong> ▾
           </button>
         </nav>
-        <button className="profile" onClick={() => setAccountOpen(true)}>
-          <span className="avatar" style={{ backgroundColor: people[0]?.color }}>
-            {getInitials(people[0]?.id || 0)}
-          </span>
-          <span>{people[0]?.name}</span>⌄
-        </button>
+
+        <div className="topbar-right">
+          {user ? (
+            <button
+              className="auth-btn-pill"
+              onClick={() => setAccountOpen(true)}
+              title="Cloud sync is active for this account"
+            >
+              <span className="sync-status-badge">
+                {syncStatus === 'syncing' ? '☁ Syncing...' : '● Synced'}
+              </span>
+              <span>{user.username}</span>
+            </button>
+          ) : (
+            <button className="auth-btn-pill" onClick={() => setAuthModalOpen(true)}>
+              <span className="cloud-icon-spin">☁</span>
+              <span>Sign In / Sync</span>
+            </button>
+          )}
+
+          <button className="profile" onClick={() => setAccountOpen(true)}>
+            <span className="avatar" style={{ backgroundColor: people[0]?.color }}>
+              {getInitials(people[0]?.id || 0)}
+            </span>
+            <span>{people[0]?.name}</span>⌄
+          </button>
+        </div>
       </header>
 
       <div className="content">
@@ -892,11 +1115,10 @@ function App() {
                     <p className="muted">Turn off to remove everyone, then select people per item.</p>
                   </div>
                   <button
-                    className={`toggle ${
-                      items.length > 0 && people.every((person) => Object.values(included).every((ids) => ids.includes(person.id)))
+                    className={`toggle ${items.length > 0 && people.every((person) => Object.values(included).every((ids) => ids.includes(person.id)))
                         ? 'on'
                         : ''
-                    }`}
+                      }`}
                     onClick={() => {
                       const all = people.every((person) => Object.values(included).every((ids) => ids.includes(person.id)))
                       setIncluded(Object.fromEntries(items.map((item) => [item.id, all ? [] : people.map((person) => person.id)])))
@@ -1115,6 +1337,110 @@ function App() {
         )}
       </div>
 
+      {/* User Auth Modal (Register / Login) */}
+      {authModalOpen && (
+        <div className="modal-backdrop" onClick={() => setAuthModalOpen(false)}>
+          <section className="account-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">SMARTSPLIT CLOUD</p>
+                <h2>{authMode === 'login' ? 'Sign In' : 'Create Account'}</h2>
+              </div>
+              <button className="close-button" onClick={() => setAuthModalOpen(false)}>
+                ×
+              </button>
+            </div>
+
+            <div className="auth-modal-tabs">
+              <button
+                type="button"
+                className={`auth-tab-btn ${authMode === 'login' ? 'active' : ''}`}
+                onClick={() => {
+                  setAuthMode('login')
+                  setAuthError(null)
+                }}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                className={`auth-tab-btn ${authMode === 'register' ? 'active' : ''}`}
+                onClick={() => {
+                  setAuthMode('register')
+                  setAuthError(null)
+                }}
+              >
+                Create Account
+              </button>
+            </div>
+
+            {authError && <div className="auth-error-banner">{authError}</div>}
+
+            <form className="auth-form" onSubmit={handleAuthSubmit}>
+              <label className="field-label">
+                <span>Username</span>
+                <input
+                  type="text"
+                  required
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  placeholder=""
+                  autoFocus
+                />
+              </label>
+
+              <label className="field-label">
+                <span>Password</span>
+                <input
+                  type="password"
+                  required
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder=""
+                />
+              </label>
+
+              <label className="remember-me-label">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                />
+                <span>Remember me on this device (stays logged in for 90 days)</span>
+              </label>
+
+              <div className="auth-notice-box">
+                ☁ Sync your splits across devices.
+              </div>
+
+              <button type="submit" className="primary-button" disabled={authLoading}>
+                <span>
+                  {authLoading
+                    ? 'Connecting...'
+                    : authMode === 'login'
+                      ? 'Sign In & Sync'
+                      : 'Create Account & Sync'}
+                </span>
+                <span>→</span>
+              </button>
+
+              <button
+                type="button"
+                className="auth-switch-link"
+                onClick={() => {
+                  setAuthMode(authMode === 'login' ? 'register' : 'login')
+                  setAuthError(null)
+                }}
+              >
+                {authMode === 'login'
+                  ? "Don't have an account? Create one now"
+                  : 'Already have an account? Sign in'}
+              </button>
+            </form>
+          </section>
+        </div>
+      )}
+
       {/* Finalize Split Confirmation Modal */}
       {finalizeModalOpen && (
         <div className="modal-backdrop" onClick={() => setFinalizeModalOpen(false)}>
@@ -1189,6 +1515,45 @@ function App() {
                 ×
               </button>
             </div>
+
+            {/* Cloud User Banner */}
+            {user ? (
+              <div className="account-section-banner">
+                <div className="account-section-user">
+                  <span className="avatar" style={{ backgroundColor: '#25242b' }}>
+                    {user.username.slice(0, 2).toUpperCase()}
+                  </span>
+                  <div>
+                    <strong style={{ fontSize: '13px' }}>{user.username}</strong>
+                    <p className="muted" style={{ fontSize: '10px', margin: 0 }}>
+                      ☁ Cloud Sync Active · Syncing with your devices
+                    </p>
+                  </div>
+                </div>
+                <button type="button" className="account-logout-btn" onClick={handleLogout}>
+                  Log out
+                </button>
+              </div>
+            ) : (
+              <div className="account-section-banner">
+                <div>
+                  <strong style={{ fontSize: '12px' }}>Local Storage Only</strong>
+                  <p className="muted" style={{ fontSize: '10px', margin: 0 }}>
+                    Sign in to sync your groups & history across phone and PC.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="action-btn-sm"
+                  onClick={() => {
+                    setAccountOpen(false)
+                    setAuthModalOpen(true)
+                  }}
+                >
+                  Sign In / Sync
+                </button>
+              </div>
+            )}
 
             <div className="group-selector-section">
               <p className="label">CHOOSE GROUP ({groups.length})</p>
