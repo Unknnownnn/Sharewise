@@ -58,6 +58,14 @@ type User = {
   username: string
 }
 
+type ScreenshotItem = {
+  id: string
+  name: string
+  preview: string
+  base64: string
+  mimeType: string
+}
+
 const colors = ['#ef765c', '#4967b0', '#d6a43a', '#6c9d73', '#9b6db0', '#3f9b9d', '#c66b91']
 const blankCharges: Charges = { tax: null, delivery: null, other: null, subtotal: null, total: null, other_breakdown: [] }
 const money = (value: number) => `₹${value.toFixed(2)}`
@@ -367,10 +375,12 @@ function App() {
     other: '',
   })
   const [fileName, setFileName] = useState('No bill scanned yet')
-  const [preview, setPreview] = useState<string | null>(null)
-  const [status, setStatus] = useState('Upload a bill screenshot to begin')
+  const [status, setStatus] = useState('Upload bill screenshot(s) to begin')
+  const [screenshots, setScreenshots] = useState<ScreenshotItem[]>([])
+  const [isScanning, setIsScanning] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const appendFileInput = useRef<HTMLInputElement>(null)
 
   // Navigation & History states
   const [viewMode, setViewMode] = useState<'split' | 'history'>('split')
@@ -522,32 +532,48 @@ function App() {
     })
   }
 
+  const fileToScreenshotItem = async (file: File): Promise<ScreenshotItem> => {
+    const buffer = await file.arrayBuffer()
+    return {
+      id: `${file.name}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      name: file.name,
+      preview: URL.createObjectURL(file),
+      base64: toBase64(buffer),
+      mimeType: file.type || 'image/png',
+    }
+  }
+
   const resetCurrentBill = () => {
+    screenshots.forEach((s) => URL.revokeObjectURL(s.preview))
+    setScreenshots([])
     setItems([])
     setCharges(blankCharges)
     setEditedCharges({ tax: '', delivery: '', other: '' })
     setFileName('No bill scanned yet')
-    setPreview(null)
-    setStatus('Upload a bill screenshot to begin')
+    setStatus('Upload bill screenshot(s) to begin')
     setIncluded({})
     setViewMode('split')
   }
 
-  const upload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    setFileName(file.name)
-    setPreview(URL.createObjectURL(file))
+  const runOcrOnScreenshots = async (itemsList: ScreenshotItem[]) => {
+    if (itemsList.length === 0) return
+    setIsScanning(true)
     setItems([])
     setCharges(blankCharges)
     setEditedCharges({ tax: '', delivery: '', other: '' })
-    setStatus('Reading screenshot and extracting charges...')
+    setStatus(
+      itemsList.length > 1
+        ? `Analyzing ${itemsList.length} continuous screenshots & merging duplicates...`
+        : 'Reading screenshot and extracting charges...',
+    )
 
     try {
       const response = await fetch('/api/ocr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: toBase64(await file.arrayBuffer()), mimeType: file.type }),
+        body: JSON.stringify({
+          images: itemsList.map((s) => ({ image: s.base64, mimeType: s.mimeType })),
+        }),
       })
       const payload = (await response.json()) as Record<string, unknown>
       if (!response.ok) {
@@ -596,9 +622,61 @@ function App() {
         other: nextCharges.other !== null ? String(nextCharges.other) : '',
       })
       setIncluded(Object.fromEntries(parsed.map((item) => [item.id, people.map((person) => person.id)])))
-      setStatus(`${parsed.length} items and charges extracted · review before splitting`)
+      setStatus(
+        itemsList.length > 1
+          ? `${parsed.length} unique items extracted across ${itemsList.length} screenshots · duplicates merged`
+          : `${parsed.length} items and charges extracted · review before splitting`,
+      )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'OCR request failed')
+    } finally {
+      setIsScanning(false)
+    }
+  }
+
+  const handleInitialUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+    const fileArray = Array.from(files)
+    const loaded = await Promise.all(fileArray.map(fileToScreenshotItem))
+    setScreenshots(loaded)
+    setFileName(loaded.length === 1 ? loaded[0].name : `${loaded.length} continuous screenshots`)
+    void runOcrOnScreenshots(loaded)
+    event.target.value = ''
+  }
+
+  const handleAppendScreenshots = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files
+    if (!files || files.length === 0) return
+    const fileArray = Array.from(files)
+    const loaded = await Promise.all(fileArray.map(fileToScreenshotItem))
+    const updated = [...screenshots, ...loaded]
+    setScreenshots(updated)
+    setFileName(`${updated.length} continuous screenshots`)
+    void runOcrOnScreenshots(updated)
+    event.target.value = ''
+  }
+
+  const moveScreenshot = (index: number, direction: -1 | 1) => {
+    const target = index + direction
+    if (target < 0 || target >= screenshots.length) return
+    const next = [...screenshots]
+    const temp = next[index]
+    next[index] = next[target]
+    next[target] = temp
+    setScreenshots(next)
+  }
+
+  const removeScreenshot = (id: string) => {
+    const target = screenshots.find((s) => s.id === id)
+    if (target) URL.revokeObjectURL(target.preview)
+    const next = screenshots.filter((s) => s.id !== id)
+    setScreenshots(next)
+    if (next.length === 0) {
+      resetCurrentBill()
+    } else {
+      setFileName(next.length === 1 ? next[0].name : `${next.length} continuous screenshots`)
+      void runOcrOnScreenshots(next)
     }
   }
 
@@ -966,19 +1044,123 @@ function App() {
               </div>
             </div>
 
-            <section className="upload-strip">
-              <div className="scan-icon">⌁</div>
-              {preview && <img className="bill-preview" src={preview} alt="Uploaded bill" />}
-              <div>
-                <strong>Scan a new bill</strong>
-                <p>
-                  {fileName} <span className="dot">•</span> {status}
-                </p>
+            <section className={`upload-strip ${screenshots.length > 0 ? 'has-screenshots' : ''}`}>
+              <div className="upload-strip-header">
+                <div className="scan-icon">⌁</div>
+                <div>
+                  <strong>
+                    {screenshots.length === 0
+                      ? 'Scan a new bill'
+                      : screenshots.length === 1
+                      ? '1 Bill Screenshot'
+                      : `${screenshots.length} Continuous Screenshots`}
+                    {screenshots.length > 1 && (
+                      <span className="continuity-tag">Scroll Continuity Active</span>
+                    )}
+                  </strong>
+                  <p>
+                    {fileName} <span className="dot">•</span> {status}
+                  </p>
+                </div>
+
+                <div className="upload-strip-actions">
+                  {screenshots.length === 0 ? (
+                    <button
+                      type="button"
+                      className="upload-button"
+                      onClick={() => fileInput.current?.click()}
+                    >
+                      ↑ Upload screenshot(s)
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="add-more-screenshots-btn"
+                        onClick={() => appendFileInput.current?.click()}
+                        title="Add the next screenshot in sequence"
+                      >
+                        ＋ Add screenshot
+                      </button>
+                      <button
+                        type="button"
+                        className="rescan-btn"
+                        disabled={isScanning}
+                        onClick={() => void runOcrOnScreenshots(screenshots)}
+                      >
+                        {isScanning ? 'Scanning...' : `⚡ Re-scan all (${screenshots.length})`}
+                      </button>
+                      <button
+                        type="button"
+                        className="clear-screenshots-btn"
+                        onClick={resetCurrentBill}
+                      >
+                        Clear
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-              <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={upload} />
-              <button className="upload-button" onClick={() => fileInput.current?.click()}>
-                ↑ Upload screenshot
-              </button>
+
+              <input
+                ref={fileInput}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={handleInitialUpload}
+              />
+              <input
+                ref={appendFileInput}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={handleAppendScreenshots}
+              />
+
+              {screenshots.length > 0 && (
+                <div className="screenshot-carousel">
+                  {screenshots.map((item, idx) => (
+                    <div className="screenshot-thumb-card" key={item.id}>
+                      <img className="screenshot-thumb-img" src={item.preview} alt={`Screenshot ${idx + 1}`} />
+                      <span className="screenshot-badge">
+                        #{idx + 1} {idx === 0 && screenshots.length > 1 ? 'Top' : idx === screenshots.length - 1 && screenshots.length > 1 ? 'End' : ''}
+                      </span>
+                      <button
+                        type="button"
+                        className="screenshot-remove-btn"
+                        onClick={() => removeScreenshot(item.id)}
+                        title="Remove this screenshot"
+                      >
+                        ×
+                      </button>
+                      {screenshots.length > 1 && (
+                        <div className="screenshot-nav-controls">
+                          <button
+                            type="button"
+                            className="screenshot-nav-btn"
+                            disabled={idx === 0}
+                            onClick={() => moveScreenshot(idx, -1)}
+                            title="Move earlier in sequence"
+                          >
+                            ◀
+                          </button>
+                          <button
+                            type="button"
+                            className="screenshot-nav-btn"
+                            disabled={idx === screenshots.length - 1}
+                            onClick={() => moveScreenshot(idx, 1)}
+                            title="Move later in sequence"
+                          >
+                            ▶
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             <div className="workspace">

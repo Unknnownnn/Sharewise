@@ -76,7 +76,20 @@ async function readJsonBody(request) {
 const port = Number(process.env.PORT || process.env.API_PORT || 80)
 const host = process.env.HOST || '0.0.0.0'
 const model = process.env.OPENROUTER_MODEL || 'openrouter/free'
-const extractionPrompt = `Look at this grocery bill screenshot carefully. Return JSON only. First inspect the complete final bill summary section, usually near the bottom, and read the exact visible values for tax/GST, delivery or delivery fee, handling/convenience/platform/rain/surge/peak charges, discounts, subtotal, and final bill total. A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate a charge from the total. Extract every purchased product and its final line amount. Put every fee other than tax and delivery into other, and list its visible components in other_breakdown. Return exactly: {"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}. Amounts must be numbers without currency symbols. `
+
+const extractionPromptSingle = `Look at this grocery/delivery bill screenshot carefully. Return JSON only. First inspect the complete final bill summary section, usually near the bottom, and read the exact visible values for tax/GST, delivery or delivery fee, handling/convenience/platform/rain/surge/peak charges, discounts, subtotal, and final bill total. A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate a charge from the total. Extract every purchased product and its final line amount. Put every fee other than tax and delivery into other, and list its visible components in other_breakdown. Return exactly: {"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}. Amounts must be numbers without currency symbols.`
+
+const extractionPromptMulti = `You are analyzing a sequence of multiple continuous screenshots of the SAME single order/receipt bill, captured in scroll order from top to bottom.
+
+CRITICAL CONTINUITY & DEDUPLICATION RULES:
+1. Continuous Scroll Overlap: The user took multiple screenshots while scrolling down through a long bill. Consecutive screenshots frequently overlap vertically.
+2. Deduplicate Overlapping Items: If a purchased item is visible in more than one screenshot (e.g. cut off or shown near the bottom of screenshot N and visible again at the top of screenshot N+1), you MUST DEDUPLICATE IT. DO NOT list the same purchased item twice! Include each unique purchased product/item exactly once in the "items" list.
+3. Natural Order: List the items in their natural chronological order from the top of the first screenshot down through the final screenshot.
+4. Summary & Extras: Extract the full bill breakdown (subtotal, tax/GST, delivery fees, handling/platform/surge/rain/packaging fees, discounts, and final grand total). These summary charges are located near the bottom of the final screenshot(s). A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate charges from the total. Put every fee other than tax and delivery into other, and list its visible components in other_breakdown.
+
+Return JSON only in this exact format:
+{"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}
+Amounts must be numbers without currency symbols.`
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -281,7 +294,50 @@ function normalizeCharges(payload) {
   }
 }
 
-async function requestModel(image, mimeType) {
+function deduplicateItems(items) {
+  if (!Array.isArray(items) || items.length <= 1) return items
+  const result = []
+  for (let i = 0; i < items.length; i++) {
+    const curr = items[i]
+    if (!curr || !curr.name) continue
+
+    const normCurrName = String(curr.name).trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+    const currAmount = parseAmount(curr.amount ?? curr.price)
+
+    // Check if duplicate of an item seen within the last 6 items (overlap window)
+    const isDuplicate = result.slice(-6).some((prev) => {
+      const normPrevName = String(prev.name).trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+      const prevAmount = parseAmount(prev.amount ?? prev.price)
+      if (normCurrName && normCurrName === normPrevName) {
+        if (currAmount !== null && prevAmount !== null) {
+          return Math.abs(currAmount - prevAmount) < 0.01
+        }
+        return true
+      }
+      return false
+    })
+
+    if (!isDuplicate) {
+      result.push(curr)
+    } else {
+      console.log(`Deduplicated overlapping item from screenshots: "${curr.name}" (${currAmount})`)
+    }
+  }
+  return result
+}
+
+async function requestModel(imageList) {
+  const isMulti = imageList.length > 1
+  const promptText = isMulti ? extractionPromptMulti : extractionPromptSingle
+
+  const userContent = [
+    { type: 'text', text: promptText },
+    ...imageList.map((img) => ({
+      type: 'image_url',
+      image_url: { url: `data:${img.mimeType};base64,${img.image}` },
+    })),
+  ]
+
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -297,10 +353,7 @@ async function requestModel(image, mimeType) {
       messages: [
         {
           role: 'user',
-          content: [
-            { type: 'text', text: extractionPrompt },
-            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${image}` } },
-          ],
+          content: userContent,
         },
       ],
     }),
@@ -478,23 +531,38 @@ const server = http.createServer(async (request, response) => {
     return sendJson(response, 405, { error: 'Method not allowed' }, origin)
   }
 
-  // OCR API endpoint
+  // OCR API endpoint (supports single screenshot or multiple continuous screenshots)
   if (request.url === '/api/ocr') {
     if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' }, origin)
     if (!process.env.OPENROUTER_API_KEY) return sendJson(response, 500, { error: 'OPENROUTER_API_KEY is missing. Add it to .env and restart the API.' }, origin)
 
     try {
       const input = await readJsonBody(request)
-      if (!input.image || !input.mimeType) return sendJson(response, 400, { error: 'image and mimeType are required' }, origin)
-      if (input.image.length > 12_000_000) return sendJson(response, 413, { error: 'Image is too large. Use an image under 9 MB.' }, origin)
-
-      console.log(`OCR request: model=${model}, mimeType=${input.mimeType}, base64Chars=${input.image.length}`)
-      const content = await requestModel(input.image, input.mimeType)
-      const result = normalizeCharges(parseModelJson(content))
-      if (Array.isArray(result.items)) {
-        result.items = result.items.map((item) => ({ ...item, amount: parseAmount(item.amount ?? item.price) }))
+      let imageList = []
+      if (Array.isArray(input.images) && input.images.length > 0) {
+        imageList = input.images.filter((img) => img && img.image && img.mimeType)
+      } else if (input.image && input.mimeType) {
+        imageList = [{ image: input.image, mimeType: input.mimeType }]
       }
-      return sendJson(response, 200, { model, result }, origin)
+
+      if (imageList.length === 0) {
+        return sendJson(response, 400, { error: 'At least one screenshot is required' }, origin)
+      }
+
+      const totalChars = imageList.reduce((sum, img) => sum + (img.image ? img.image.length : 0), 0)
+      if (totalChars > 25_000_000) {
+        return sendJson(response, 413, { error: 'Total screenshot payload too large. Please use fewer or smaller images.' }, origin)
+      }
+
+      console.log(`OCR request: model=${model}, screenshotsCount=${imageList.length}, totalBase64Chars=${totalChars}`)
+      const content = await requestModel(imageList)
+      const parsed = parseModelJson(content)
+      const result = normalizeCharges(parsed)
+      if (Array.isArray(result.items)) {
+        const deduplicated = deduplicateItems(result.items)
+        result.items = deduplicated.map((item) => ({ ...item, amount: parseAmount(item.amount ?? item.price) }))
+      }
+      return sendJson(response, 200, { model, result, screenshotsCount: imageList.length }, origin)
     } catch (error) {
       const status = error && typeof error === 'object' && 'status' in error && typeof error.status === 'number' ? error.status : 500
       return sendJson(response, status, { error: error instanceof Error ? error.message : 'OCR request failed', model, sentImage: true }, origin)
