@@ -235,6 +235,32 @@ function extractDelivery(source: Record<string, unknown>): number | null {
   return null
 }
 
+function extractDiscount(source: Record<string, unknown>): number | null {
+  const discountKeys = [
+    'discount', 'discount_amount', 'product_discount', 'item_discount',
+    'total_discount', 'coupon_discount', 'coupon', 'promo_discount',
+    'offer_discount', 'savings', 'total_savings',
+  ]
+  for (const key of discountKeys) {
+    if (source[key] !== undefined && source[key] !== null) {
+      const parsed = parseAmount(source[key])
+      // discounts are sometimes stored as negative numbers — normalise to positive
+      if (parsed !== null) return Math.abs(parsed)
+    }
+  }
+  // Check inside other_breakdown for discount-like entries
+  if (Array.isArray(source.other_breakdown)) {
+    const discountEntry = source.other_breakdown.find(
+      (entry) => entry && typeof entry === 'object' && typeof entry.label === 'string' && /discount|coupon|promo|saving/i.test(entry.label),
+    )
+    if (discountEntry && (discountEntry as { amount?: unknown }).amount != null) {
+      const parsed = parseAmount((discountEntry as { amount: unknown }).amount)
+      if (parsed !== null) return Math.abs(parsed)
+    }
+  }
+  return null
+}
+
 function extractOther(source: Record<string, unknown>): number | null {
   const otherKeys = ['other', 'other_charges', 'other_charge', 'other_fee', 'others']
   for (const key of otherKeys) {
@@ -250,7 +276,7 @@ function extractOther(source: Record<string, unknown>): number | null {
     'peak_fee', 'weather_charge',
     'platform', 'platform_fee',
     'service_fee', 'convenience_fee',
-    'discount', 'product_discount', 'discount_amount',
+    // NOTE: discount keys are intentionally excluded — they are handled by extractDiscount()
   ]
   const detailedOther = detailedKeys
     .map((k) => parseAmount(source[k]))
@@ -608,6 +634,7 @@ function App() {
 
       const taxVal = extractTax(rawCharges)
       const deliveryVal = extractDelivery(rawCharges)
+      const discountVal = extractDiscount(rawCharges)
       const otherVal = extractOther(rawCharges)
       const subtotalVal = extractSubtotal(rawCharges)
       const totalVal = extractTotal(rawCharges)
@@ -615,6 +642,7 @@ function App() {
       const nextCharges: Charges = {
         tax: taxVal,
         delivery: deliveryVal,
+        discount: discountVal,
         other: otherVal,
         other_breakdown: Array.isArray(rawCharges.other_breakdown)
           ? (rawCharges.other_breakdown as Array<{ label: string; amount: number }>)
@@ -628,7 +656,7 @@ function App() {
       setEditedCharges({
         tax: nextCharges.tax !== null ? String(nextCharges.tax) : '',
         delivery: nextCharges.delivery !== null ? String(nextCharges.delivery) : '',
-        discount: '',
+        discount: nextCharges.discount !== null ? String(nextCharges.discount) : '',
         other: nextCharges.other !== null ? String(nextCharges.other) : '',
       })
       setIncluded(Object.fromEntries(parsed.map((item) => [item.id, people.map((person) => person.id)])))
