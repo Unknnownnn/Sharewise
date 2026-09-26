@@ -77,7 +77,7 @@ const port = Number(process.env.PORT || process.env.API_PORT || 80)
 const host = process.env.HOST || '0.0.0.0'
 const model = process.env.OPENROUTER_MODEL || 'openrouter/free'
 
-const extractionPromptSingle = `Look at this grocery/delivery bill screenshot carefully. Return JSON only. First inspect the complete final bill summary section, usually near the bottom, and read the exact visible values for tax/GST, delivery or delivery fee, handling/convenience/platform/rain/surge/peak charges, discounts, subtotal, and final bill total. A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate a charge from the total. Extract every purchased product and its final line amount. Put every fee other than tax and delivery into other, and list its visible components in other_breakdown. Return exactly: {"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}. Amounts must be numbers without currency symbols.`
+const extractionPromptSingle = `Look at this grocery/delivery bill screenshot carefully. Return JSON only. First inspect the complete final bill summary section, usually near the bottom, and read the exact visible values for tax/GST, delivery or delivery fee, handling/convenience/platform/rain/surge/peak charges, discounts/coupons/offers/savings, subtotal, and final bill total. A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate a charge from the total. Extract every purchased product and its final line amount. Put every fee other than tax, delivery, and discount into other, and list its visible components in other_breakdown. If there is any discount, coupon, offer discount, or savings shown, put the absolute (positive) value into discount. Return exactly: {"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"discount":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}. Amounts must be numbers without currency symbols. Discount must be a positive number (even if shown as negative on the bill).`
 
 const extractionPromptMulti = `You are analyzing a sequence of multiple continuous screenshots of the SAME single order/receipt bill, captured in scroll order from top to bottom.
 
@@ -85,11 +85,11 @@ CRITICAL CONTINUITY & DEDUPLICATION RULES:
 1. Continuous Scroll Overlap: The user took multiple screenshots while scrolling down through a long bill. Consecutive screenshots frequently overlap vertically.
 2. Deduplicate Overlapping Items: If a purchased item is visible in more than one screenshot (e.g. cut off or shown near the bottom of screenshot N and visible again at the top of screenshot N+1), you MUST DEDUPLICATE IT. DO NOT list the same purchased item twice! Include each unique purchased product/item exactly once in the "items" list.
 3. Natural Order: List the items in their natural chronological order from the top of the first screenshot down through the final screenshot.
-4. Summary & Extras: Extract the full bill breakdown (subtotal, tax/GST, delivery fees, handling/platform/surge/rain/packaging fees, discounts, and final grand total). These summary charges are located near the bottom of the final screenshot(s). A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate charges from the total. Put every fee other than tax and delivery into other, and list its visible components in other_breakdown.
+4. Summary & Extras: Extract the full bill breakdown (subtotal, tax/GST, delivery fees, handling/platform/surge/rain/packaging fees, discounts/coupons/offer discounts/savings, and final grand total). These summary charges are located near the bottom of the final screenshot(s). A visible FREE delivery means delivery is 0; an unreadable or absent value must be null, never 0. Do not guess or calculate charges from the total. Put every fee other than tax, delivery, and discount into other, and list its visible components in other_breakdown. If there is any discount, coupon, offer discount, or savings shown, put the absolute (positive) value into discount.
 
 Return JSON only in this exact format:
-{"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}
-Amounts must be numbers without currency symbols.`
+{"items":[{"name":string,"quantity":string|null,"unit":string|null,"amount":number|null,"confidence":number}],"charges":{"tax":number|null,"delivery":number|null,"discount":number|null,"other":number|null,"other_breakdown":[{"label":string,"amount":number}],"subtotal":number|null,"total":number|null}}
+Amounts must be numbers without currency symbols. Discount must be a positive number (even if shown as negative/green on the bill).`
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -245,7 +245,7 @@ function normalizeCharges(payload) {
     'peak_fee', 'weather_charge',
     'platform', 'platform_fee',
     'service_fee', 'convenience_fee',
-    'discount', 'product_discount', 'discount_amount',
+    // NOTE: discount keys excluded — handled by discountAliases block below
   ]
   const detailedOther = detailedKeys
     .map((k) => parseAmount(source[k]))
@@ -281,11 +281,38 @@ function normalizeCharges(payload) {
     }
   }
 
+  // Extract discount separately (offer discount, coupon, savings etc.)
+  let discount = null
+  const discountAliases = [
+    'discount', 'discount_amount', 'product_discount', 'item_discount',
+    'total_discount', 'coupon_discount', 'coupon', 'promo_discount',
+    'offer_discount', 'savings', 'total_savings',
+  ]
+  for (const alias of discountAliases) {
+    if (source[alias] !== undefined && source[alias] !== null) {
+      const parsed = parseAmount(source[alias])
+      // Discounts may be stored as negative numbers — normalise to positive
+      if (parsed !== null) { discount = Math.abs(parsed); break }
+    }
+  }
+  // Also check other_breakdown for discount-like line items
+  if (discount === null && other_breakdown.length > 0) {
+    const discountEntry = other_breakdown.find(
+      (entry) => entry && typeof entry.label === 'string' && /discount|coupon|promo|saving|offer/i.test(entry.label)
+    )
+    if (discountEntry && discountEntry.amount != null) {
+      discount = Math.abs(parseAmount(discountEntry.amount) ?? 0) || null
+      // Remove from other_breakdown since it now has its own field
+      other_breakdown = other_breakdown.filter((entry) => entry !== discountEntry)
+    }
+  }
+
   return {
     ...payload,
     charges: {
       tax,
       delivery,
+      discount,
       other,
       other_breakdown,
       subtotal,
