@@ -1113,6 +1113,11 @@ h3 {
     display: none;
   }
 
+  /* Extra bottom padding so mobile bottom nav doesn't overlap content */
+  .content {
+    padding-bottom: 90px;
+  }
+
   .page-heading {
     margin-bottom: 24px;
   }
@@ -1150,7 +1155,7 @@ h3 {
 
 .bill-options {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(110px, 1fr));
+  grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(100px, 1fr));
   gap: 14px;
   align-items: end;
 }
@@ -1184,7 +1189,7 @@ h3 {
 
 @media (max-width: 800px) {
   .bill-options {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .bill-options>div {
@@ -1195,7 +1200,7 @@ h3 {
 @media (max-width: 480px) {
   .bill-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 10px;
   }
 }
 
@@ -1910,4 +1915,172 @@ h3 {
 .account-logout-btn:hover {
   border-color: #c44733;
   color: #c44733;
+}
+
+/* --- Edit split button --- */
+.edit-split-btn {
+  border: 1px solid #4967b0;
+  background: #f0f3fb;
+  color: #4967b0;
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s;
+}
+
+.edit-split-btn:hover {
+  background: #4967b0;
+  color: #fff;
+}
+
+.history-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* --- Discount badge in history extras --- */
+.history-discount {
+  color: #3b7e47;
+  font-weight: 600;
+}
+
+/* --- Discount label in bill options --- */
+.discount-label {
+  border: 1px dashed #c7e5cf;
+  border-radius: 4px;
+  background: #f6fbf7;
+  padding: 6px 8px;
+}
+
+.bill-option-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #8d887e;
+}
+
+.discount-hint {
+  font-size: 9px;
+  font-weight: 700;
+  color: #3b7e47;
+  background: #eef6f0;
+  padding: 2px 5px;
+  border-radius: 3px;
+  border: 1px solid #c7e5cf;
+}
+
+/* --- Status badge variant for edit mode --- */
+.status.status-edit {
+  color: #4967b0;
+  border-color: #b8c6e8;
+  background: #f0f3fb;
+}
+
+/* --- Mobile Bottom Navigation Bar --- */
+.mobile-bottom-nav {
+  display: none;
+}
+
+@media (max-width: 480px) {
+  .mobile-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    background: rgba(255, 253, 247, 0.97);
+    border-top: 1px solid #ded9ce;
+    box-shadow: 0 -4px 16px rgba(37, 36, 43, 0.08);
+    height: 62px;
+    align-items: stretch;
+  }
+
+  .mobile-nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 0;
+    background: transparent;
+    color: #8a867e;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    padding: 6px 4px;
+    cursor: pointer;
+    transition: color 0.15s;
+    position: relative;
+  }
+
+  .mobile-nav-item.active {
+    color: #ef765c;
+  }
+
+  .mobile-nav-item.active::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 20%;
+    right: 20%;
+    height: 2px;
+    background: #ef765c;
+    border-radius: 0 0 2px 2px;
+  }
+
+  .mobile-nav-icon {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    font-size: 14px;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 700;
+    font-size: 9px;
+    line-height: 1;
+  }
+
+  /* When nav-icon is just text/emoji (not avatar), reset bg */
+  .mobile-nav-item:not(.active) .mobile-nav-icon {
+    color: #8a867e;
+    background: transparent;
+    width: auto;
+    height: auto;
+    font-size: 16px;
+    font-weight: 400;
+  }
+
+  .mobile-nav-item.active .mobile-nav-icon {
+    color: #ef765c;
+    background: transparent;
+    width: auto;
+    height: auto;
+    font-size: 16px;
+    font-weight: 400;
+  }
+
+  .mobile-nav-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #ef765c;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    margin-left: 3px;
+    vertical-align: middle;
+  }
 }

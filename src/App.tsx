@@ -8,6 +8,7 @@ type Item = { id: number; name: string; detail: string; amount: number }
 type Charges = {
   tax: number | null
   delivery: number | null
+  discount: number | null
   other: number | null
   other_breakdown?: Array<{ label: string; amount: number }>
   subtotal: number | null
@@ -40,10 +41,12 @@ type FinalizedSplit = {
   charges: {
     tax: number | null
     delivery: number | null
+    discount: number | null
     other: number | null
     subtotal: number | null
     total: number | null
   }
+  included: Record<number, number[]>
   shares: Array<{
     personId: number
     name: string
@@ -67,7 +70,7 @@ type ScreenshotItem = {
 }
 
 const colors = ['#ef765c', '#4967b0', '#d6a43a', '#6c9d73', '#9b6db0', '#3f9b9d', '#c66b91']
-const blankCharges: Charges = { tax: null, delivery: null, other: null, subtotal: null, total: null, other_breakdown: [] }
+const blankCharges: Charges = { tax: null, delivery: null, discount: null, other: null, subtotal: null, total: null, other_breakdown: [] }
 const money = (value: number) => `₹${value.toFixed(2)}`
 
 function cleanWord(w: string) {
@@ -369,11 +372,14 @@ function App() {
   const [items, setItems] = useState<Item[]>([])
   const [included, setIncluded] = useState<Record<number, number[]>>({})
   const [charges, setCharges] = useState<Charges>(blankCharges)
-  const [editedCharges, setEditedCharges] = useState<Record<'tax' | 'delivery' | 'other', string>>({
+  const [editedCharges, setEditedCharges] = useState<Record<'tax' | 'delivery' | 'discount' | 'other', string>>({
     tax: '',
     delivery: '',
+    discount: '',
     other: '',
   })
+  // Edit mode: tracks which split is being edited (null = new split)
+  const [editingSplitId, setEditingSplitId] = useState<string | null>(null)
   const [fileName, setFileName] = useState('No bill scanned yet')
   const [status, setStatus] = useState('Upload bill screenshot(s) to begin')
   const [screenshots, setScreenshots] = useState<ScreenshotItem[]>([])
@@ -491,11 +497,12 @@ function App() {
   const values = {
     tax: editedCharges.tax === '' ? null : Number(editedCharges.tax),
     delivery: editedCharges.delivery === '' ? null : Number(editedCharges.delivery),
+    discount: editedCharges.discount === '' ? null : Number(editedCharges.discount),
     other: editedCharges.other === '' ? null : Number(editedCharges.other),
   }
 
   const itemTotal = items.reduce((sum, item) => sum + item.amount, 0)
-  const calculatedTotal = itemTotal + (values.tax || 0) + (values.delivery || 0) + (values.other || 0)
+  const calculatedTotal = itemTotal + (values.tax || 0) + (values.delivery || 0) + (values.other || 0) - (values.discount || 0)
   const currentTotal = items.length ? (charges.total ?? calculatedTotal) : calculatedTotal
   const discrepancy = charges.total !== null && Math.abs(charges.total - calculatedTotal) > 0.01
 
@@ -510,11 +517,12 @@ function App() {
     const selected = people.filter((person) => Object.values(included).some((ids) => ids.includes(person.id)))
     const targetPeople = selected.length > 0 ? selected : people
     const extras = ((values.tax || 0) + (values.delivery || 0) + (values.other || 0)) / (targetPeople.length || 1)
+    const discountPerPerson = (values.discount || 0) / (targetPeople.length || 1)
     targetPeople.forEach((person) => {
-      totals[person.id] += extras
+      totals[person.id] += extras - discountPerPerson
     })
     return totals
-  }, [included, items, people, values.delivery, values.other, values.tax])
+  }, [included, items, people, values.delivery, values.discount, values.other, values.tax])
 
   const addItem = () => {
     const id = Date.now()
@@ -548,10 +556,11 @@ function App() {
     setScreenshots([])
     setItems([])
     setCharges(blankCharges)
-    setEditedCharges({ tax: '', delivery: '', other: '' })
+    setEditedCharges({ tax: '', delivery: '', discount: '', other: '' })
     setFileName('No bill scanned yet')
     setStatus('Upload bill screenshot(s) to begin')
     setIncluded({})
+    setEditingSplitId(null)
     setViewMode('split')
   }
 
@@ -560,7 +569,7 @@ function App() {
     setIsScanning(true)
     setItems([])
     setCharges(blankCharges)
-    setEditedCharges({ tax: '', delivery: '', other: '' })
+    setEditedCharges({ tax: '', delivery: '', discount: '', other: '' })
     setStatus(
       itemsList.length > 1
         ? `Analyzing ${itemsList.length} continuous screenshots & merging duplicates...`
@@ -619,6 +628,7 @@ function App() {
       setEditedCharges({
         tax: nextCharges.tax !== null ? String(nextCharges.tax) : '',
         delivery: nextCharges.delivery !== null ? String(nextCharges.delivery) : '',
+        discount: '',
         other: nextCharges.other !== null ? String(nextCharges.other) : '',
       })
       setIncluded(Object.fromEntries(parsed.map((item) => [item.id, people.map((person) => person.id)])))
@@ -806,10 +816,12 @@ function App() {
       amount: shares[person.id] || 0,
     }))
 
-    const newSplit: FinalizedSplit = {
-      id: 'split_' + Date.now(),
+    const splitData: FinalizedSplit = {
+      id: editingSplitId || 'split_' + Date.now(),
       title: splitTitleInput.trim() || `${groupName} Split`,
-      date: new Date().toISOString(),
+      date: editingSplitId
+        ? (history.find((s) => s.id === editingSplitId)?.date ?? new Date().toISOString())
+        : new Date().toISOString(),
       displayDate: new Date().toLocaleString('en-IN', {
         day: 'numeric',
         month: 'short',
@@ -831,17 +843,56 @@ function App() {
       charges: {
         tax: values.tax,
         delivery: values.delivery,
+        discount: values.discount,
         other: values.other,
         subtotal: charges.subtotal,
         total: charges.total,
       },
+      included: { ...included },
       shares: activeShares,
     }
 
-    setHistory((current) => [newSplit, ...current])
+    if (editingSplitId) {
+      setHistory((current) => current.map((s) => (s.id === editingSplitId ? splitData : s)))
+    } else {
+      setHistory((current) => [splitData, ...current])
+    }
     setFinalizeModalOpen(false)
-    setExpandedSplitId(newSplit.id)
+    setEditingSplitId(null)
+    setExpandedSplitId(splitData.id)
     setViewMode('history')
+  }
+
+  const editSplit = (split: FinalizedSplit) => {
+    // Restore all bill state from the saved split
+    resetCurrentBill()
+    setEditingSplitId(split.id)
+    setSplitTitleInput(split.title)
+    setFileName(split.fileName || 'No bill scanned yet')
+    setStatus('Editing saved split — make changes and re-finalize')
+    setItems(split.items.map((it) => ({ ...it })))
+    setCharges({
+      tax: split.charges.tax,
+      delivery: split.charges.delivery,
+      discount: split.charges.discount ?? null,
+      other: split.charges.other,
+      subtotal: split.charges.subtotal,
+      total: split.charges.total,
+    })
+    setEditedCharges({
+      tax: split.charges.tax != null ? String(split.charges.tax) : '',
+      delivery: split.charges.delivery != null ? String(split.charges.delivery) : '',
+      discount: split.charges.discount != null ? String(split.charges.discount) : '',
+      other: split.charges.other != null ? String(split.charges.other) : '',
+    })
+    // Restore included map; fall back to all people for items without data
+    const restoredIncluded: Record<number, number[]> = {}
+    split.items.forEach((it) => {
+      restoredIncluded[it.id] = split.included?.[it.id] ?? people.map((p) => p.id)
+    })
+    setIncluded(restoredIncluded)
+    setViewMode('split')
+    setFinalizeModalOpen(true)
   }
 
   const copySplitSummary = (split: FinalizedSplit) => {
@@ -976,7 +1027,7 @@ function App() {
     })
   }, [history, historyFilterGroup, historySearch])
 
-  const chargeKeys = ['tax', 'delivery', 'other'] as const
+  const chargeKeys = ['tax', 'delivery', 'discount', 'other'] as const
 
   return (
     <main className="app-shell">
@@ -1036,12 +1087,24 @@ function App() {
           <>
             <div className="page-heading">
               <div>
-                <p className="eyebrow">{groupName.toUpperCase()} / NEW BILL</p>
+                <p className="eyebrow">{groupName.toUpperCase()} / {editingSplitId ? 'EDIT SPLIT' : 'NEW BILL'}</p>
                 <h1>
-                  New split <span className="status">● Editing</span>
+                  {editingSplitId ? 'Edit split' : 'New split'}{' '}
+                  <span className={`status ${editingSplitId ? 'status-edit' : ''}`}>
+                    {editingSplitId ? '✏ Editing saved' : '● Editing'}
+                  </span>
                 </h1>
-                <p className="muted">Upload a bill, then decide who shares each line.</p>
+                <p className="muted">
+                  {editingSplitId
+                    ? 'Modify items, charges, and who owes what — then re-finalize to save changes.'
+                    : 'Upload a bill, then decide who shares each line.'}
+                </p>
               </div>
+              {editingSplitId && (
+                <button className="ghost-button" onClick={resetCurrentBill} style={{ whiteSpace: 'nowrap' }}>
+                  ✕ Discard edits
+                </button>
+              )}
             </div>
 
             <section className={`upload-strip ${screenshots.length > 0 ? 'has-screenshots' : ''}`}>
@@ -1273,8 +1336,11 @@ function App() {
                     <p className="muted">Values detected from bill or entered manually. Edit any value if needed.</p>
                   </div>
                   {chargeKeys.map((key) => (
-                    <label key={key}>
-                      {key === 'other' ? 'Others' : key[0].toUpperCase() + key.slice(1)}
+                    <label key={key} className={key === 'discount' ? 'discount-label' : ''}>
+                      <span className="bill-option-label">
+                        {key === 'other' ? 'Others' : key === 'discount' ? '🏷 Discount' : key[0].toUpperCase() + key.slice(1)}
+                        {key === 'discount' && <span className="discount-hint">(deducted)</span>}
+                      </span>
                       <input
                         type="number"
                         step="any"
@@ -1343,7 +1409,7 @@ function App() {
                   disabled={items.length === 0 && currentTotal === 0}
                   style={{ marginTop: '20px' }}
                 >
-                  <span>Finalize split</span> <span>→</span>
+                  <span>{editingSplitId ? 'Save changes' : 'Finalize split'}</span> <span>→</span>
                 </button>
               </aside>
             </div>
@@ -1471,6 +1537,9 @@ function App() {
                               {split.charges.other != null && split.charges.other > 0 && (
                                 <span>Others: <strong>{money(split.charges.other)}</strong></span>
                               )}
+                              {split.charges.discount != null && split.charges.discount > 0 && (
+                                <span className="history-discount">🏷 Discount: <strong>-{money(split.charges.discount)}</strong></span>
+                              )}
                             </div>
                           </div>
 
@@ -1500,13 +1569,22 @@ function App() {
                               📋 {copiedSplitId === split.id ? '✓ Copied to clipboard!' : 'Copy WhatsApp summary'}
                             </button>
 
-                            <button
-                              type="button"
-                              className="delete-split-btn"
-                              onClick={() => deleteSplit(split.id)}
-                            >
-                              Delete from history
-                            </button>
+                            <div className="history-footer-actions">
+                              <button
+                                type="button"
+                                className="edit-split-btn"
+                                onClick={() => editSplit(split)}
+                              >
+                                ✏ Edit split
+                              </button>
+                              <button
+                                type="button"
+                                className="delete-split-btn"
+                                onClick={() => deleteSplit(split.id)}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -1629,8 +1707,8 @@ function App() {
           <section className="account-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">SAVE & FINALIZE</p>
-                <h2>Finalize this split</h2>
+                <p className="eyebrow">{editingSplitId ? 'UPDATE SPLIT' : 'SAVE & FINALIZE'}</p>
+                <h2>{editingSplitId ? 'Save changes' : 'Finalize this split'}</h2>
               </div>
               <button className="close-button" onClick={() => setFinalizeModalOpen(false)}>
                 ×
@@ -1678,7 +1756,7 @@ function App() {
             </div>
 
             <button className="primary-button" onClick={confirmFinalizeSplit} style={{ marginTop: '20px' }}>
-              Confirm & Save to History <span>→</span>
+              {editingSplitId ? 'Save Changes' : 'Confirm & Save to History'} <span>→</span>
             </button>
           </section>
         </div>
@@ -1858,6 +1936,32 @@ function App() {
           </section>
         </div>
       )}
+      {/* Mobile Bottom Navigation Bar */}
+      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+        <button
+          className={`mobile-nav-item ${viewMode === 'split' ? 'active' : ''}`}
+          onClick={() => setViewMode('split')}
+        >
+          <span className="mobile-nav-icon">＋</span>
+          <span>New split</span>
+        </button>
+        <button
+          className={`mobile-nav-item ${viewMode === 'history' ? 'active' : ''}`}
+          onClick={() => setViewMode('history')}
+        >
+          <span className="mobile-nav-icon">⌗</span>
+          <span>My splits {history.length > 0 && <span className="mobile-nav-badge">{history.length}</span>}</span>
+        </button>
+        <button
+          className="mobile-nav-item"
+          onClick={() => setAccountOpen(true)}
+        >
+          <span className="mobile-nav-icon" style={{ backgroundColor: people[0]?.color }}>
+            {getInitials(people[0]?.id || 0)}
+          </span>
+          <span>Group</span>
+        </button>
+      </nav>
     </main>
   )
 }
