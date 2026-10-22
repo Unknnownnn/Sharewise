@@ -9,6 +9,8 @@
     "start": "node api.mjs",
     "test:openrouter": "node scripts/test-openrouter.mjs",
     "dev:all": "concurrently \"npm run api\" \"npm run dev\"",
+    "splitwise:seed": "node server/splitwise/seed.mjs",
+    "splitwise:setup": "npx playwright install chromium",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"
@@ -17,6 +19,9 @@
     "dotenv": "^17.4.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.56.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

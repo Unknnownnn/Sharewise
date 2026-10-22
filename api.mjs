@@ -4,6 +4,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { config } from 'dotenv'
+import { AuthError, getClient } from './server/splitwise/client.mjs'
 
 config()
 
@@ -73,7 +74,7 @@ async function readJsonBody(request) {
   return JSON.parse(raw)
 }
 
-const port = Number(process.env.PORT || process.env.API_PORT || 80)
+const port = Number(process.env.API_PORT || process.env.PORT || 8787)
 const host = process.env.HOST || '0.0.0.0'
 const model = process.env.OPENROUTER_MODEL || 'openrouter/free'
 
@@ -115,6 +116,50 @@ function sendJson(response, status, body, requestOrigin = '*') {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   })
   response.end(JSON.stringify(body))
+}
+
+// Splitwise writes create real money movements, so they are limited to an
+// authenticated request or a loopback caller. Set SPLITWISE_ALLOW_LOCAL=0 to
+// require a login even on the same machine.
+function canUseSplitwise(request) {
+  if (getAuthenticatedUser(request)) return true
+  if (String(process.env.SPLITWISE_ALLOW_LOCAL ?? '1') === '0') return false
+  const remote = request.socket.remoteAddress || ''
+  return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
+}
+
+async function readSplitwisePayload(request) {
+  const body = await readJsonBody(request)
+  const groupName = String(body.group_name || body.group || '').trim()
+  const shares = Array.isArray(body.shares)
+    ? body.shares
+        .map((share) => ({
+          name: String(share && share.name ? share.name : '').trim(),
+          amount: Number(share && share.amount),
+        }))
+        .filter((share) => share.name && Number.isFinite(share.amount) && share.amount > 0)
+    : []
+
+  if (!groupName) throw new Error('Pick a Splitwise group first.')
+  if (!shares.length) throw new Error('Nobody owes anything in this split.')
+
+  return {
+    groupName,
+    total: Number(body.total),
+    description: String(body.description || 'SmartSplit bill').trim(),
+    currency: String(body.currency || 'INR').trim(),
+    shares,
+    payer: body.payer ? String(body.payer).trim() : null,
+    date: /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '').trim())
+      ? String(body.date).trim()
+      : null,
+  }
+}
+
+function splitwiseErrorStatus(error) {
+  if (error instanceof AuthError) return 401
+  if (/Pick a Splitwise group|Nobody owes|Shares add up|not in Splitwise group|matches multiple|appears twice|greater than zero|A description is required|ambiguous|was not found|has no members|Could not resolve who paid/.test(error.message)) return 400
+  return 502
 }
 
 function serveStaticFile(request, response) {
@@ -409,7 +454,21 @@ async function requestModel(imageList) {
   return content
 }
 
-const server = http.createServer(async (request, response) => {
+const server = http.createServer((request, response) => {
+  handleRequest(request, response).catch((error) => {
+    console.error('Unhandled API error:', error)
+
+    if (!response.headersSent) {
+      return sendJson(response, 500, { error: 'Internal server error' }, request.headers.origin || '*')
+    }
+
+    if (!response.writableEnded) {
+      response.end()
+    }
+  })
+})
+
+async function handleRequest(request, response) {
   const origin = request.headers.origin || '*'
 
   if (request.method === 'OPTIONS') {
@@ -596,6 +655,69 @@ const server = http.createServer(async (request, response) => {
     }
   }
 
+  // Splitwise integration (reads the seeded browser session)
+  if (request.url.startsWith('/api/splitwise/')) {
+    const splitwisePath = new URL(request.url, 'http://localhost').pathname
+
+    if (!canUseSplitwise(request)) {
+      return sendJson(
+        response,
+        401,
+        { error: 'Sign in, or call from localhost, to use Splitwise.' },
+        origin,
+      )
+    }
+
+    const client = getClient()
+
+    try {
+      if (splitwisePath === '/api/splitwise/health') {
+        return sendJson(response, 200, { ok: client.authenticated, ...client.describe() }, origin)
+      }
+
+      if (splitwisePath === '/api/splitwise/groups') {
+        const groups = await client.getGroups({ refresh: request.url.includes('refresh=1') })
+
+        return sendJson(response, 200, {
+          groups: groups.map((group) => ({
+            id: String(group.id),
+            name: group.name,
+            members: group.members.map((member) => ({
+              id: String(member.id),
+              name: [member.first_name, member.last_name].filter(Boolean).join(' ').trim(),
+            })),
+          })),
+          current_user: client.user
+            ? {
+                id: String(client.user.id),
+                name: [client.user.first_name, client.user.last_name].filter(Boolean).join(' ').trim(),
+              }
+            : null,
+        }, origin)
+      }
+
+      if (splitwisePath === '/api/splitwise/preview') {
+        if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' }, origin)
+        return sendJson(response, 200, await client.preview(await readSplitwisePayload(request)), origin)
+      }
+
+      if (splitwisePath === '/api/splitwise/send') {
+        if (request.method !== 'POST') return sendJson(response, 405, { error: 'Method not allowed' }, origin)
+        return sendJson(response, 200, await client.createExpense(await readSplitwisePayload(request)), origin)
+      }
+
+      return sendJson(response, 404, { error: 'Splitwise route not found' }, origin)
+    } catch (error) {
+      const status = splitwiseErrorStatus(error)
+      console.error(`Splitwise ${request.url}: ${error instanceof Error ? error.message : error}`)
+
+      return sendJson(response, status, {
+        error: error instanceof Error ? error.message : 'Splitwise request failed',
+        reauth_required: Boolean(error && error.reauthRequired),
+      }, origin)
+    }
+  }
+
   // Any other API path
   if (request.url.startsWith('/api/')) {
     return sendJson(response, 404, { error: 'API route not found' }, origin)
@@ -603,8 +725,65 @@ const server = http.createServer(async (request, response) => {
 
   // Frontend static files & SPA handling
   return serveStaticFile(request, response)
+}
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(
+      `Port ${port} is already in use. Stop the process using it, or set API_PORT to a free port.`,
+    )
+    process.exit(1)
+  }
+
+  throw error
 })
 
 server.listen(port, host, () => {
   console.log(`SmartSplit listening on http://${host}:${port}`)
+
+  if (String(process.env.SPLITWISE_ENABLED ?? '1') === '0') {
+    console.log('Splitwise integration disabled (SPLITWISE_ENABLED=0)')
+    return
+  }
+
+  // Warm the browser profile in the background so the first send is fast.
+  const client = getClient()
+
+  client
+    .ensureStarted()
+    .then(() => client.getCurrentUser())
+    .then((user) => {
+      console.log(
+        `Splitwise session ready as ${user.first_name || ''} ${user.last_name || ''}.`,
+      )
+    })
+    .catch((error) => {
+      console.warn(`Splitwise not ready: ${error.message}`)
+
+      if (!/Playwright is not installed/.test(error.message)) {
+        console.warn('Run "npm run splitwise:seed" after adding SPLITWISE_COOKIE to .env.')
+      }
+    })
+
+  const keepAliveMinutes = Number(process.env.SPLITWISE_KEEPALIVE_MINUTES || 30)
+
+  setInterval(() => {
+    client.keepAlive().catch((error) => {
+      console.warn(`Splitwise keepalive failed: ${error.message}`)
+    })
+  }, keepAliveMinutes * 60 * 1000).unref()
+})
+
+async function shutdown(signal) {
+  console.log(`${signal} received, closing Splitwise browser.`)
+  server.close()
+  await getClient().close()
+  process.exit(0)
+}
+
+process.on('SIGINT', () => void shutdown('SIGINT'))
+process.on('SIGTERM', () => void shutdown('SIGTERM'))
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason)
 })

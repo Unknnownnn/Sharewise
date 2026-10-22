@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
+import SplitwiseSendModal from './SplitwiseSendModal'
+import type { SplitwiseShare } from './SplitwiseSendModal'
 import './App.css'
 
 type Person = { id: number; name: string; color: string; initials?: string }
@@ -72,6 +74,29 @@ type ScreenshotItem = {
 const colors = ['#ef765c', '#4967b0', '#d6a43a', '#6c9d73', '#9b6db0', '#3f9b9d', '#c66b91']
 const blankCharges: Charges = { tax: null, delivery: null, discount: null, other: null, subtotal: null, total: null, other_breakdown: [] }
 const money = (value: number) => `₹${value.toFixed(2)}`
+
+// When api.mjs is not running, the Vite proxy answers 502 with an empty body.
+// Parsing that directly surfaces "JSON.parse: unexpected end of data" instead
+// of something the user can act on, so every response is read defensively.
+async function readJson<T>(response: Response): Promise<T> {
+  const text = await response.text()
+
+  if (!text.trim()) {
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      throw new Error(
+        'The SmartSplit API server is not reachable. Start it with "npm run dev:all" and try again.',
+      )
+    }
+
+    throw new Error(`The server returned an empty response (HTTP ${response.status}).`)
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(`The server returned a non-JSON response (HTTP ${response.status}).`)
+  }
+}
 
 function cleanWord(w: string) {
   return w.replace(/[^a-zA-Z0-9]/g, '')
@@ -434,6 +459,15 @@ function App() {
   const [copiedSplitId, setCopiedSplitId] = useState<string | null>(null)
   const [finalizeModalOpen, setFinalizeModalOpen] = useState(false)
   const [splitTitleInput, setSplitTitleInput] = useState('')
+  const [splitwiseTarget, setSplitwiseTarget] = useState<{
+    id: string
+    title: string
+    date: string
+    groupId: string
+    groupName: string
+    total: number
+    shares: SplitwiseShare[]
+  } | null>(null)
 
   // Check auth session on startup
   useEffect(() => {
@@ -441,7 +475,14 @@ function App() {
     fetch('/api/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+      .then((res) =>
+        res.ok
+          ? readJson<{
+              user: User
+              data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
+            }>(res)
+          : Promise.reject(res),
+      )
       .then(
         (payload: {
           user: User
@@ -610,7 +651,7 @@ function App() {
           images: itemsList.map((s) => ({ image: s.base64, mimeType: s.mimeType })),
         }),
       })
-      const payload = (await response.json()) as Record<string, unknown>
+      const payload = await readJson<Record<string, unknown>>(response)
       if (!response.ok) {
         throw new Error(typeof payload.error === 'string' ? payload.error : `OCR request failed (${response.status})`)
       }
@@ -960,12 +1001,12 @@ function App() {
         }),
       })
 
-      const data = (await res.json()) as {
+      const data = await readJson<{
         user?: User
         token?: string
         error?: string
         data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
-      }
+      }>(res)
 
       if (!res.ok) {
         throw new Error(data.error || 'Authentication failed')
@@ -1589,13 +1630,32 @@ function App() {
                           </div>
 
                           <div className="history-card-footer">
-                            <button
-                              type="button"
-                              className="copy-summary-btn"
-                              onClick={() => copySplitSummary(split)}
-                            >
-                              📋 {copiedSplitId === split.id ? '✓ Copied to clipboard!' : 'Copy WhatsApp summary'}
-                            </button>
+                            <div className="history-footer-left">
+                              <button
+                                type="button"
+                                className="copy-summary-btn"
+                                onClick={() => copySplitSummary(split)}
+                              >
+                                📋 {copiedSplitId === split.id ? '✓ Copied to clipboard!' : 'Copy WhatsApp summary'}
+                              </button>
+                              <button
+                                type="button"
+                                className="splitwise-send-btn"
+                                onClick={() =>
+                                  setSplitwiseTarget({
+                                    id: split.id,
+                                    title: split.title,
+                                    date: split.date,
+                                    groupId: split.groupId,
+                                    groupName: split.groupName,
+                                    total: split.total,
+                                    shares: split.shares,
+                                  })
+                                }
+                              >
+                                ⇄ Send to Splitwise
+                              </button>
+                            </div>
 
                             <div className="history-footer-actions">
                               <button
@@ -1788,6 +1848,21 @@ function App() {
             </button>
           </section>
         </div>
+      )}
+
+      {splitwiseTarget && (
+        <SplitwiseSendModal
+          key={splitwiseTarget.id}
+          open
+          token={token}
+          title={splitwiseTarget.title}
+          date={splitwiseTarget.date}
+          groupId={splitwiseTarget.groupId}
+          groupName={splitwiseTarget.groupName}
+          total={splitwiseTarget.total}
+          shares={splitwiseTarget.shares}
+          onClose={() => setSplitwiseTarget(null)}
+        />
       )}
 
       {/* Account & Groups Modal */}
