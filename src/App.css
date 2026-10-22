@@ -2257,3 +2257,81 @@ h3 {
     padding: 20px;
   }
 }
+
+/* --- Splitwise person mapping --- */
+.mapping-backdrop {
+  /* Opened from the Account & Groups modal, so it must sit above it. */
+  z-index: 20;
+}
+
+.splitwise-map-button {
+  width: 100%;
+  margin-top: 14px;
+  border: 1px dashed #d4cec2;
+  background: #faf7f0;
+  color: #25242b;
+  padding: 11px 13px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.splitwise-map-button:hover {
+  border-color: #ef765c;
+  color: #c9503a;
+}
+
+.splitwise-map-button span {
+  color: #8d887e;
+  font-weight: 400;
+}
+
+.mapping-modal .field-label select,
+.mapping-row select {
+  border: 1px solid #d9d2c7;
+  background: #faf7f0;
+  color: #25242b;
+  padding: 9px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 100%;
+}
+
+.mapping-rows {
+  margin: 14px 0;
+  border: 1px solid #ded9ce;
+  background: #faf7f0;
+  padding: 4px 14px;
+}
+
+.mapping-row {
+  display: grid;
+  grid-template-columns: 1fr 190px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px dashed #e7e2d8;
+  font-size: 12px;
+}
+
+.mapping-row:last-child {
+  border-bottom: none;
+}
+
+.mapping-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  .mapping-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}

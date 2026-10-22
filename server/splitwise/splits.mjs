@@ -89,6 +89,52 @@ export function matchMemberByName(group, name) {
   return matches[0]
 }
 
+/**
+ * Resolves a SmartSplit name to a Splitwise member without guessing wildly.
+ *
+ * Order: exact full name, exact first name, unique prefix (three or more
+ * characters), unique single initial. Ambiguous or unknown names return
+ * null so the caller can skip them instead of attributing someone else's
+ * money. An explicit mapping from the group settings always wins.
+ */
+export function resolveMember(group, name) {
+  const needle = normalizeName(name)
+
+  if (!needle) {
+    return null
+  }
+
+  const exact = group.members.filter((user) => normalizeName(fullName(user)) === needle)
+
+  if (exact.length === 1) return exact[0]
+  if (exact.length > 1) return null
+
+  const byFirst = group.members.filter((user) => normalizeName(user.first_name) === needle)
+
+  if (byFirst.length === 1) return byFirst[0]
+  if (byFirst.length > 1) return null
+
+  if (needle.length >= 3) {
+    const prefixed = group.members.filter((user) => {
+      const full = normalizeName(fullName(user))
+      const first = normalizeName(user.first_name)
+      return full.startsWith(needle) || first.startsWith(needle)
+    })
+
+    if (prefixed.length === 1) return prefixed[0]
+  }
+
+  if (needle.length === 1) {
+    const initial = group.members.filter((user) =>
+      normalizeName(user.first_name).startsWith(needle),
+    )
+
+    if (initial.length === 1) return initial[0]
+  }
+
+  return null
+}
+
 export function findGroupByName(groups, groupName) {
   const needle = normalizeName(groupName).replace(/\s+/g, '')
 
@@ -116,8 +162,12 @@ export function findGroupByName(groups, groupName) {
 /**
  * Builds the flattened users__N__* body for POST /create_expense.
  *
- * `shares` are rupee amounts keyed by the SmartSplit person name. `total`
- * is the amount actually owed in aggregate; any difference beyond normal
+ * `shares` are rupee amounts. Each share may carry an explicit `user_id`
+ * (from the saved mapping) or `skip`. Without an id the member is resolved
+ * by name; people who cannot be resolved are skipped and reported, and the
+ * expense cost becomes the sum of the people who were actually included.
+ *
+ * `total` is the amount owed in aggregate; any difference beyond normal
  * floating point drift is rejected instead of being silently absorbed.
  */
 export function buildExpenseData({
@@ -127,6 +177,7 @@ export function buildExpenseData({
   currency = 'INR',
   shares,
   payer = null,
+  payerId = null,
   date = null,
   currentUserId,
 }) {
@@ -164,58 +215,104 @@ export function buildExpenseData({
     )
   }
 
-  const allocated = allocatePaise(incoming, totalPaise)
-  const rows = allocated.map((entry) => ({
-    user: matchMemberByName(group, entry.name),
-    owedPaise: entry.paise,
+  const matched = []
+  const skipped = []
+  let skippedPaise = 0
+
+  for (const share of incoming) {
+    if (share.skip) {
+      skippedPaise += Math.round(Number(share.amount) * 100)
+      skipped.push({
+        name: share.name,
+        amount: (Math.round(Number(share.amount) * 100) / 100).toFixed(2),
+      })
+      continue
+    }
+
+    const mapped = share.user_id
+      ? group.members.find((user) => String(user.id) === String(share.user_id))
+      : null
+
+    const member = mapped || resolveMember(group, share.name)
+
+    if (!member) {
+      skippedPaise += Math.round(Number(share.amount) * 100)
+      skipped.push({
+        name: share.name,
+        amount: (Math.round(Number(share.amount) * 100) / 100).toFixed(2),
+      })
+      continue
+    }
+
+    matched.push({ name: share.name, amount: Number(share.amount), user: member })
+  }
+
+  if (!matched.length) {
+    throw new Error(
+      'None of the people in this split match the Splitwise group. ' +
+        'Set the mapping in the group settings, then try again.',
+    )
+  }
+
+  const seen = new Map()
+
+  for (const row of matched) {
+    const id = String(row.user.id)
+
+    if (seen.has(id)) {
+      throw new Error(
+        `"${seen.get(id)}" and "${row.name}" both map to ${fullName(row.user)}. ` +
+          'Fix the Splitwise mapping in the group settings.',
+      )
+    }
+
+    seen.set(id, row.name)
+  }
+
+  const keptPaise = matched.reduce((sum, row) => sum + Math.round(row.amount * 100), 0)
+  const allocated = allocatePaise(
+    matched.map(({ name, amount }) => ({ name, amount })),
+    keptPaise,
+  )
+
+  const rows = matched.map((row, index) => ({
+    user: row.user,
+    owedPaise: allocated[index].paise,
   }))
 
-  const payerUser = payer
-    ? matchMemberByName(group, payer)
-    : group.members.find((user) => String(user.id) === String(currentUserId))
+  const payerUser = payerId
+    ? group.members.find((user) => String(user.id) === String(payerId))
+    : payer
+      ? matchMemberByName(group, payer)
+      : group.members.find((user) => String(user.id) === String(currentUserId))
 
   if (!payerUser) {
     throw new Error('Could not resolve who paid this bill in the Splitwise group.')
   }
 
-  const payerId = String(payerUser.id)
-  const seen = new Set()
-
-  const uniqueRows = []
-
-  for (const row of rows) {
-    const id = String(row.user.id)
-
-    if (seen.has(id)) {
-      throw new Error(`"${fullName(row.user)}" appears twice in this split.`)
-    }
-
-    seen.add(id)
-    uniqueRows.push(row)
-  }
-
-  const payerRow = uniqueRows.find((row) => String(row.user.id) === payerId)
+  const payerUserId = String(payerUser.id)
+  const payerRow = rows.find((row) => String(row.user.id) === payerUserId)
 
   if (payerRow) {
-    payerRow.paidPaise = totalPaise
+    payerRow.paidPaise = keptPaise
   } else {
     // The payer can legitimately owe nothing (for example when their
     // items were excluded), so add them with a zero owed share.
-    uniqueRows.push({
+    rows.push({
       user: payerUser,
       owedPaise: 0,
-      paidPaise: totalPaise,
+      paidPaise: keptPaise,
     })
   }
 
-  for (const row of uniqueRows) {
+  for (const row of rows) {
     if (row.paidPaise === undefined) {
       row.paidPaise = 0
     }
   }
 
   const data = {
-    cost: (totalPaise / 100).toFixed(2),
+    cost: (keptPaise / 100).toFixed(2),
     description: String(description).trim(),
     currency_code: currency || 'INR',
     group_id: String(group.id),
@@ -226,7 +323,7 @@ export function buildExpenseData({
     data.date = String(date)
   }
 
-  uniqueRows.forEach((row, index) => {
+  rows.forEach((row, index) => {
     data[`users__${index}__user_id`] = String(row.user.id)
     data[`users__${index}__paid_share`] = (row.paidPaise / 100).toFixed(2)
     data[`users__${index}__owed_share`] = (row.owedPaise / 100).toFixed(2)
@@ -234,12 +331,18 @@ export function buildExpenseData({
 
   return {
     data,
-    rows: uniqueRows.map((row) => ({
+    rows: rows.map((row) => ({
       user_id: String(row.user.id),
       name: fullName(row.user),
       paid: (row.paidPaise / 100).toFixed(2),
       owed: (row.owedPaise / 100).toFixed(2),
     })),
-    payer: { id: payerId, name: fullName(payerUser) },
+    payer: { id: payerUserId, name: fullName(payerUser) },
+    skipped,
+    totals: {
+      requested: (totalPaise / 100).toFixed(2),
+      included: (keptPaise / 100).toFixed(2),
+      skipped: (skippedPaise / 100).toFixed(2),
+    },
   }
 }

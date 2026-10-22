@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
+import SplitwiseMappingModal from './SplitwiseMappingModal'
 import SplitwiseSendModal from './SplitwiseSendModal'
 import type { SplitwiseShare } from './SplitwiseSendModal'
 import './App.css'
@@ -61,6 +62,23 @@ type FinalizedSplit = {
 type User = {
   id: string
   username: string
+}
+
+// Per SmartSplit group: which Splitwise group to send to, and how each
+// person maps. A member value of 'skip' excludes that person; an absent
+// entry means "match by name".
+type SplitwiseGroupConfig = {
+  groupName: string
+  members: Record<number, string>
+}
+
+type SplitwiseConfig = Record<string, SplitwiseGroupConfig>
+
+type SyncedData = {
+  groups?: Group[]
+  activeGroupId?: string
+  history?: FinalizedSplit[]
+  splitwise?: SplitwiseConfig
 }
 
 type ScreenshotItem = {
@@ -468,6 +486,19 @@ function App() {
     total: number
     shares: SplitwiseShare[]
   } | null>(null)
+  const [mappingOpen, setMappingOpen] = useState(false)
+  const [splitwiseConfig, setSplitwiseConfig] = useState<SplitwiseConfig>(() => {
+    try {
+      const saved = localStorage.getItem('smartsplit-splitwise')
+      if (saved) {
+        const parsed = JSON.parse(saved) as SplitwiseConfig
+        if (parsed && typeof parsed === 'object') return parsed
+      }
+    } catch {
+      // Ignore a corrupted settings blob and start clean.
+    }
+    return {}
+  })
 
   // Check auth session on startup
   useEffect(() => {
@@ -479,14 +510,14 @@ function App() {
         res.ok
           ? readJson<{
               user: User
-              data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
+              data?: SyncedData
             }>(res)
           : Promise.reject(res),
       )
       .then(
         (payload: {
           user: User
-          data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
+          data?: SyncedData
         }) => {
           setUser(payload.user)
           localStorage.setItem('smartsplit-user', JSON.stringify(payload.user))
@@ -502,6 +533,9 @@ function App() {
             if (Array.isArray(payload.data.history)) {
               setHistory(payload.data.history)
               localStorage.setItem('smartsplit-history', JSON.stringify(payload.data.history))
+            }
+            if (payload.data.splitwise && typeof payload.data.splitwise === 'object') {
+              setSplitwiseConfig(payload.data.splitwise)
             }
           }
           setSyncStatus('synced')
@@ -529,6 +563,10 @@ function App() {
     localStorage.setItem('smartsplit-history', JSON.stringify(history))
   }, [history])
 
+  useEffect(() => {
+    localStorage.setItem('smartsplit-splitwise', JSON.stringify(splitwiseConfig))
+  }, [splitwiseConfig])
+
   // Cloud sync debounced save across devices
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
@@ -547,6 +585,7 @@ function App() {
           groups,
           activeGroupId,
           history,
+          splitwise: splitwiseConfig,
         }),
       })
         .then((res) => {
@@ -559,7 +598,7 @@ function App() {
     return () => {
       if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current)
     }
-  }, [groups, activeGroupId, history, token, user])
+  }, [groups, activeGroupId, history, splitwiseConfig, token, user])
 
   const values = {
     tax: editedCharges.tax === '' ? null : Number(editedCharges.tax),
@@ -997,7 +1036,7 @@ function App() {
           username: authUsername.trim(),
           password: authPassword,
           rememberMe,
-          initialData: { groups, activeGroupId, history },
+          initialData: { groups, activeGroupId, history, splitwise: splitwiseConfig },
         }),
       })
 
@@ -1005,7 +1044,7 @@ function App() {
         user?: User
         token?: string
         error?: string
-        data?: { groups?: Group[]; activeGroupId?: string; history?: FinalizedSplit[] }
+        data?: SyncedData
       }>(res)
 
       if (!res.ok) {
@@ -1034,6 +1073,9 @@ function App() {
           }
           if (Array.isArray(data.data.history)) {
             setHistory(data.data.history)
+          }
+          if (data.data.splitwise && typeof data.data.splitwise === 'object') {
+            setSplitwiseConfig(data.data.splitwise)
           }
         }
 
@@ -1861,9 +1903,28 @@ function App() {
           groupName={splitwiseTarget.groupName}
           total={splitwiseTarget.total}
           shares={splitwiseTarget.shares}
+          mapping={splitwiseConfig[splitwiseTarget.groupId]?.members ?? {}}
+          preferredGroup={splitwiseConfig[splitwiseTarget.groupId]?.groupName || ''}
           onClose={() => setSplitwiseTarget(null)}
         />
       )}
+
+      <SplitwiseMappingModal
+        key={activeGroup.id}
+        open={mappingOpen}
+        token={token}
+        groupId={activeGroup.id}
+        groupName={activeGroup.name}
+        people={people}
+        value={splitwiseConfig[activeGroup.id] ?? { groupName: '', members: {} }}
+        onChange={(next) =>
+          setSplitwiseConfig((current) => ({
+            ...current,
+            [activeGroup.id]: next,
+          }))
+        }
+        onClose={() => setMappingOpen(false)}
+      />
 
       {/* Account & Groups Modal */}
       {accountOpen && (
@@ -2030,6 +2091,19 @@ function App() {
 
               <button className="add-member-button" onClick={addPerson}>
                 ＋ Add member
+              </button>
+
+              <button
+                type="button"
+                className="splitwise-map-button"
+                onClick={() => setMappingOpen(true)}
+              >
+                ⇄ Splitwise mapping
+                <span>
+                  {splitwiseConfig[activeGroup.id]?.groupName
+                    ? splitwiseConfig[activeGroup.id].groupName
+                    : 'Not configured'}
+                </span>
               </button>
             </div>
 

@@ -27,6 +27,8 @@ type SplitwisePreview = {
   rows: PreviewRow[]
   payer: { id: string; name: string }
   payload: Record<string, string>
+  skipped: Array<{ name: string; amount: string }>
+  totals: { requested: string; included: string; skipped: string }
 }
 
 export type SplitwiseSent = {
@@ -53,6 +55,8 @@ type Props = {
   groupName: string
   total: number
   shares: SplitwiseShare[]
+  mapping: Record<number, string>
+  preferredGroup: string
   onClose: () => void
   onSent?: (result: SplitwiseSent) => void
 }
@@ -107,6 +111,8 @@ export default function SplitwiseSendModal({
   groupName,
   total,
   shares,
+  mapping,
+  preferredGroup,
   onClose,
   onSent,
 }: Props) {
@@ -133,6 +139,24 @@ export default function SplitwiseSendModal({
     const parsed = new Date(date)
     return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10)
   }, [date])
+
+  // Explicit mappings win; 'skip' excludes a person; an empty entry leaves
+  // resolution to the server's name matching.
+  const sharePayload = useMemo(
+    () =>
+      activeShares.map((share) => {
+        const mapped = mapping[share.personId]
+
+        if (mapped === 'skip') {
+          return { name: share.name, amount: share.amount, skip: true }
+        }
+
+        return mapped
+          ? { name: share.name, amount: share.amount, user_id: mapped }
+          : { name: share.name, amount: share.amount }
+      }),
+    [activeShares, mapping],
+  )
 
   useEffect(() => {
     if (!open) return
@@ -168,22 +192,25 @@ export default function SplitwiseSendModal({
 
         const savedName = localStorage.getItem(groupKey(groupId))
         const initial =
+          data.groups.find((group) => group.name === preferredGroup) ??
           data.groups.find((group) => group.name === savedName) ??
           data.groups.find((group) => normalize(group.name) === normalize(groupName)) ??
           data.groups[0]
 
         setSelectedGroup(initial ? initial.name : '')
 
-        const savedPayer = localStorage.getItem(PAYER_KEY)
-        const memberNames = initial ? initial.members.map((member) => member.name) : []
-        const preferredPayer =
-          savedPayer && memberNames.includes(savedPayer)
-            ? savedPayer
-            : data.current_user && memberNames.includes(data.current_user.name)
-              ? data.current_user.name
-              : memberNames[0] || ''
+        // Payer preferences are stored as Splitwise user ids, because names
+        // can change and can collide.
+        const savedPayerId = localStorage.getItem(PAYER_KEY)
+        const memberIds = initial ? initial.members.map((member) => member.id) : []
+        const preferredPayerId =
+          savedPayerId && memberIds.includes(savedPayerId)
+            ? savedPayerId
+            : data.current_user && memberIds.includes(data.current_user.id)
+              ? data.current_user.id
+              : memberIds[0] || ''
 
-        setPayer(preferredPayer)
+        setPayer(preferredPayerId)
         setStatus('ready')
       } catch (loadError) {
         if (cancelled) return
@@ -198,7 +225,7 @@ export default function SplitwiseSendModal({
     return () => {
       cancelled = true
     }
-  }, [open, token, groupId, groupName])
+  }, [open, token, groupId, groupName, preferredGroup])
 
   useEffect(() => {
     if (!open || status !== 'ready' || !selectedGroup || !payer || !activeShares.length) {
@@ -221,8 +248,8 @@ export default function SplitwiseSendModal({
           description: title,
           date: expenseDate,
           currency: 'INR',
-          payer,
-          shares: activeShares.map((share) => ({ name: share.name, amount: share.amount })),
+          payer_id: payer,
+          shares: sharePayload,
         }),
       })
         .then((result) => {
@@ -246,7 +273,7 @@ export default function SplitwiseSendModal({
       cancelled = true
       clearTimeout(timer)
     }
-  }, [open, status, selectedGroup, payer, title, expenseDate, shareSum, activeShares, token])
+  }, [open, status, selectedGroup, payer, title, expenseDate, shareSum, activeShares.length, sharePayload, token])
 
   const activeGroup = groups.find((group) => group.name === selectedGroup) || null
 
@@ -265,8 +292,8 @@ export default function SplitwiseSendModal({
           description: title,
           date: expenseDate,
           currency: 'INR',
-          payer,
-          shares: activeShares.map((share) => ({ name: share.name, amount: share.amount })),
+          payer_id: payer,
+          shares: sharePayload,
         }),
       })
 
@@ -335,7 +362,7 @@ export default function SplitwiseSendModal({
                 <span>Who paid the bill</span>
                 <select value={payer} onChange={(event) => setPayer(event.target.value)}>
                   {(activeGroup?.members || []).map((member) => (
-                    <option key={member.id} value={member.name}>
+                    <option key={member.id} value={member.id}>
                       {member.name}
                     </option>
                   ))}
@@ -351,6 +378,13 @@ export default function SplitwiseSendModal({
               <p className="splitwise-note">
                 The receipt total is ₹{total.toFixed(2)} but the shares add up to ₹
                 {shareSum.toFixed(2)}. Splitwise receives the sum of the shares.
+              </p>
+            )}
+
+            {preview && preview.skipped.length > 0 && (
+              <p className="splitwise-note">
+                {preview.skipped.length} left out of the expense: {preview.skipped.map((entry) => `${entry.name} (₹${entry.amount})`).join(', ')}.
+                {' '}Included total: ₹{preview.totals.included}.
               </p>
             )}
 
@@ -398,7 +432,7 @@ export default function SplitwiseSendModal({
                   onClick={handleSend}
                   disabled={busy || previewing || !preview || !selectedGroup || !payer}
                 >
-                  {busy ? 'Sending...' : `Send ₹${shareSum.toFixed(2)}`}
+                  {busy ? 'Sending...' : `Send ₹${preview?.totals.included ?? shareSum.toFixed(2)}`}
                 </button>
               </div>
             )}

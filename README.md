@@ -58,7 +58,7 @@ npm install
 npm run splitwise:setup
 ```
 
-`splitwise:setup` downloads the Chromium build Playwright needs. Playwright itself is an optional dependency: if it is missing, OCR and cloud sync keep working and only the Splitwise routes report an error.
+`splitwise:setup` installs the Playwright package (including optional dependencies) and downloads the Chromium build it drives. The browser download and the npm package are separate: running `npx playwright install chromium` on its own only fills `~/.cache/ms-playwright` and leaves `node_modules/playwright` missing. Playwright is an optional dependency, so if it is missing, OCR and cloud sync keep working and only the Splitwise routes report an error.
 
 Copy the cookie header:
 
@@ -79,6 +79,16 @@ npm run splitwise:seed
 
 The seed script prints the Splitwise account it resolved. Delete `SPLITWISE_COOKIE` from `.env` afterwards; the cookies now live in the profile.
 
+### Person mapping
+
+SmartSplit names rarely match Splitwise names (a group may list `Aa`, `R`, `Ad` while Splitwise has `A`, `B`, `C`), so the bridge never guesses silently.
+
+1. Open **Account & Groups**, then click **Splitwise mapping** under the member list.
+2. Pick the Splitwise group once, then set each person to a member, **Auto (match by name)**, or **Skip (exclude)**.
+3. The mapping is saved per SmartSplit group and syncs with the account, so it follows you to another device.
+
+Auto resolution tries, in order: exact full name, exact first name, a unique prefix of three or more characters, then a unique single initial. Ambiguous names are not guessed. Anyone who still cannot be resolved is skipped, listed in the send modal, and left out of the expense total.
+
 ### Sending a split
 
 1. Scan a bill and assign items as usual.
@@ -87,17 +97,17 @@ The seed script prints the Splitwise account it resolved. Delete `SPLITWISE_COOK
 4. Pick the Splitwise group and who actually paid the bill.
 5. Review the per-person preview, then send.
 
-The selected group is remembered per SmartSplit group, and the payer is remembered globally, so repeat sends are two clicks.
+The selected group and payer are remembered per SmartSplit group, so repeat sends are two clicks.
 
 The expense is created as the signed-in Splitwise account. There is no `paid_by` field in the Splitwise API: the payer is expressed by giving that member the full `paid_share` while everyone else gets `0.00`. The expense is dated with the saved split date.
 
 ### Amounts and rounding
 
 - Shares are converted to integer paise and the rounding remainder is distributed, so `paid_share` and `owed_share` always add up to the cost to the paise.
-- The expense cost is the sum of the shares, not the OCR receipt total. If the receipt total and the shares disagree, the modal says so and sends the sum of the shares.
+- The expense cost is the included shares, not the OCR receipt total. If the receipt total and the shares disagree, the modal says so and sends the sum of the shares.
 - A mismatch larger than one rupee is rejected instead of being silently absorbed.
 - People who owe nothing are not added. The payer is added with a zero owed share if their items were excluded.
-- Names are matched against Splitwise group members (full name or first name only). Ambiguous or missing names are reported before anything is created.
+- People who cannot be matched (and everyone set to **Skip**) are excluded: the modal lists them and the cost becomes the sum of the included shares.
 
 ### Configuration
 
@@ -121,11 +131,13 @@ The routes below require a SmartSplit login **or** a loopback connection, becaus
 
 | Symptom | Fix |
 | --- | --- |
-| `Playwright is not installed` | `npm install` then `npm run splitwise:setup`. |
+| `Playwright is not installed` / `Playwright package is missing` | The browser download alone is not enough. Run `npm install --include=optional`, or `npm run splitwise:setup`. |
+| `EACCES: permission denied, mkdir .../data/splitwise-profile` | The repo was started as root at some point. Fix ownership with `sudo chown -R "$USER":"$USER" ~/Smartsplit`, and run pm2 as your own user, not with sudo. |
 | `Splitwise returned HTML instead of JSON` | The session expired. Copy a fresh cookie and run `npm run splitwise:seed`. |
 | `Splitwise rejected the CSRF token (HTTP 422)` | Same as above; the page needs a fresh load, which seeding performs. |
-| `"Name" is not in Splitwise group "Group"` | Rename the SmartSplit member to match the Splitwise member, or add them to the group. |
-| `matches multiple Splitwise members` | Use full names in the SmartSplit group. |
+| `"Name" is not in Splitwise group "Group"` | Set the person's mapping under **Splitwise mapping**, or add them to the Splitwise group. |
+| `matches multiple Splitwise members` | Two members share a name. Set an explicit mapping instead. |
+| `both map to <member>` | Two SmartSplit people point at the same Splitwise member. Fix the mapping. |
 | Expense does not appear | Check the group on splitwise.com; the modal shows an error if Splitwise returned `errors`. |
 
 # React + TypeScript + Vite

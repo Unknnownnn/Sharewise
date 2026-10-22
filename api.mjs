@@ -136,6 +136,8 @@ async function readSplitwisePayload(request) {
         .map((share) => ({
           name: String(share && share.name ? share.name : '').trim(),
           amount: Number(share && share.amount),
+          user_id: share && share.user_id ? String(share.user_id) : null,
+          skip: Boolean(share && share.skip),
         }))
         .filter((share) => share.name && Number.isFinite(share.amount) && share.amount > 0)
     : []
@@ -150,6 +152,7 @@ async function readSplitwisePayload(request) {
     currency: String(body.currency || 'INR').trim(),
     shares,
     payer: body.payer ? String(body.payer).trim() : null,
+    payerId: body.payer_id ? String(body.payer_id).trim() : null,
     date: /^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '').trim())
       ? String(body.date).trim()
       : null,
@@ -158,7 +161,7 @@ async function readSplitwisePayload(request) {
 
 function splitwiseErrorStatus(error) {
   if (error instanceof AuthError) return 401
-  if (/Pick a Splitwise group|Nobody owes|Shares add up|not in Splitwise group|matches multiple|appears twice|greater than zero|A description is required|ambiguous|was not found|has no members|Could not resolve who paid/.test(error.message)) return 400
+  if (/Pick a Splitwise group|Nobody owes|Shares add up|not in Splitwise group|matches multiple|appears twice|greater than zero|A description is required|ambiguous|was not found|has no members|Could not resolve who paid|None of the people|both map to/.test(error.message)) return 400
   return 502
 }
 

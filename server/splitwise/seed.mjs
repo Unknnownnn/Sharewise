@@ -114,7 +114,20 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`\nSeeding failed: ${error.message}`)
-  console.error('Copy a fresh Cookie header from splitwise.com and try again.')
+  const message = error instanceof Error ? error.message : String(error)
+
+  console.error(`\nSeeding failed: ${message}`)
+
+  if (/EACCES|EPERM|permission denied|not permitted/i.test(message)) {
+    console.error(
+      'The profile directory is not writable. If the app was ever started with sudo, fix ownership with:\n' +
+        '  sudo chown -R "$USER":"$USER" ~/Smartsplit',
+    )
+  } else if (/Executable doesn't exist|browserType\.launch|Chromium build/i.test(message)) {
+    console.error('Run "npm run splitwise:setup" to install the matching Chromium build.')
+  } else {
+    console.error('Copy a fresh Cookie header from splitwise.com and try again.')
+  }
+
   process.exitCode = 1
 })

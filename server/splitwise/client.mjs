@@ -78,9 +78,12 @@ export class SplitwiseClient {
     if (!this._playwright) {
       try {
         this._playwright = await import('playwright')
-      } catch {
-        this.lastError =
-          'Playwright is not installed. Run "npm run splitwise:setup" in the SmartSplit project.'
+      } catch (error) {
+        const missing = error && error.code === 'ERR_MODULE_NOT_FOUND'
+        this.lastError = missing
+          ? 'The Playwright package is missing (the browser download alone is not enough). ' +
+            'Run "npm install --include=optional" in the SmartSplit project, then try again.'
+          : `Playwright could not be loaded: ${error instanceof Error ? error.message : error}`
         throw new Error(this.lastError)
       }
     }
@@ -282,7 +285,7 @@ export class SplitwiseClient {
   /**
    * Validates a split and returns the payload without creating anything.
    */
-  async preview({ groupName, total, description, currency, shares, payer, date }) {
+  async preview({ groupName, total, description, currency, shares, payer, payerId, date }) {
     const user = await this.getCurrentUser()
     const group = await this.findGroup(groupName)
 
@@ -293,6 +296,7 @@ export class SplitwiseClient {
       currency,
       shares,
       payer,
+      payerId,
       date,
       currentUserId: String(user.id),
     })
@@ -302,10 +306,12 @@ export class SplitwiseClient {
       rows: built.rows,
       payer: built.payer,
       payload: built.data,
+      skipped: built.skipped,
+      totals: built.totals,
     }
   }
 
-  async createExpense({ groupName, total, description, currency, shares, payer, date }) {
+  async createExpense({ groupName, total, description, currency, shares, payer, payerId, date }) {
     const preview = await this.preview({
       groupName,
       total,
@@ -313,6 +319,7 @@ export class SplitwiseClient {
       currency,
       shares,
       payer,
+      payerId,
       date,
     })
 
@@ -353,6 +360,8 @@ export class SplitwiseClient {
       group: preview.group,
       rows: preview.rows,
       payer: preview.payer,
+      skipped: preview.skipped,
+      totals: preview.totals,
     }
   }
 
