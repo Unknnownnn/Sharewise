@@ -12,8 +12,19 @@
 // keeps working when it is not installed.
 
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { buildExpenseData, findGroupByName, fullName } from './splits.mjs'
+
+const require = createRequire(import.meta.url)
+
+function playwrightVersion() {
+  try {
+    return require('playwright/package.json').version
+  } catch {
+    return null
+  }
+}
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DEFAULT_PROFILE = path.join(PROJECT_ROOT, 'data', 'splitwise-profile')
@@ -77,7 +88,11 @@ export class SplitwiseClient {
   async start() {
     if (!this._playwright) {
       try {
-        this._playwright = await import('playwright')
+        const imported = await import('playwright')
+        // Playwright ships as CommonJS in some releases. Node then exposes
+        // the real module on `default` instead of as named exports, so
+        // `imported.chromium` is undefined even though the package is there.
+        this._playwright = imported.chromium ? imported : imported.default
       } catch (error) {
         const missing = error && error.code === 'ERR_MODULE_NOT_FOUND'
         this.lastError = missing
@@ -86,6 +101,13 @@ export class SplitwiseClient {
           : `Playwright could not be loaded: ${error instanceof Error ? error.message : error}`
         throw new Error(this.lastError)
       }
+    }
+
+    if (!this._playwright?.chromium) {
+      this.lastError =
+        'Playwright loaded but exposes no chromium export. Run "npm install --include=optional" ' +
+        'to install a matching version, then try again.'
+      throw new Error(this.lastError)
     }
 
     try {
@@ -382,6 +404,7 @@ export class SplitwiseClient {
       user: this.user ? fullName(this.user) : null,
       user_id: this.user ? String(this.user.id) : null,
       profile: this.profileDir,
+      playwright: this._playwright ? playwrightVersion() || 'loaded' : null,
       headless: this.headless,
       last_check: this.lastCheckAt ? new Date(this.lastCheckAt).toISOString() : null,
       last_error: this.lastError,

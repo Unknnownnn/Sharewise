@@ -84,17 +84,20 @@ export default function SplitwiseMappingModal({
 
     const load = async () => {
       try {
-        const health = await callApi<{ authenticated: boolean; user: string | null }>(
-          '/api/splitwise/health',
-          token,
-        )
+        const health = await callApi<{
+          authenticated: boolean
+          user: string | null
+          last_error: string | null
+        }>('/api/splitwise/health', token)
 
         if (cancelled) return
 
         if (!health.authenticated) {
           setStatus('error')
           setError(
-            'The Splitwise session is not signed in. Seed it with "npm run splitwise:seed", then reopen this panel.',
+            health.last_error
+              ? `Splitwise is not signed in: ${health.last_error} Run "npm run splitwise:seed" while the API is stopped, then restart it.`
+              : 'The Splitwise session is not signed in. Stop the API, run "npm run splitwise:seed", then start it again.',
           )
           return
         }

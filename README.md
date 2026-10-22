@@ -133,6 +133,7 @@ The routes below require a SmartSplit login **or** a loopback connection, becaus
 | --- | --- |
 | `Playwright is not installed` / `Playwright package is missing` | The browser download alone is not enough. Run `npm install --include=optional`, or `npm run splitwise:setup`. |
 | `EACCES: permission denied, mkdir .../data/splitwise-profile` | The repo was started as root at some point. Fix ownership with `sudo chown -R "$USER":"$USER" ~/Smartsplit`, and run pm2 as your own user, not with sudo. |
+| Seeded successfully, but the UI still says the session is not signed in | Health is a snapshot taken at boot. Stop the API (`pm2 stop smartsplit`) before seeding, then start it again. Seeding while the API holds the profile also fights over the Chromium profile lock. |
 | `Splitwise returned HTML instead of JSON` | The session expired. Copy a fresh cookie and run `npm run splitwise:seed`. |
 | `Splitwise rejected the CSRF token (HTTP 422)` | Same as above; the page needs a fresh load, which seeding performs. |
 | `"Name" is not in Splitwise group "Group"` | Set the person's mapping under **Splitwise mapping**, or add them to the Splitwise group. |
