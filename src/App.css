@@ -772,6 +772,7 @@ h3 {
 
 .account-modal {
   width: min(420px, 100%);
+  max-height: calc(100vh - 40px);
   max-height: calc(100dvh - 40px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1029,7 +1030,9 @@ h3 {
 
 .bill-options {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(100px, 1fr));
+  /* The numeric fields must be allowed to shrink; with a 100px floor the
+     last "Others" input slid under the summary panel on ~1000px windows. */
+  grid-template-columns: minmax(180px, 1fr) repeat(4, minmax(0, 1fr));
   gap: 14px;
   align-items: end;
 }
@@ -2068,9 +2071,9 @@ input[type='number']::-webkit-outer-spin-button {
     height: 60px;
     padding: 0 14px;
     gap: 10px;
-    background: rgba(255, 253, 247, .94);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
+    /* Opaque on purpose: sticky + backdrop-filter is unreliable in
+       Firefox for Android and blurs text while scrolling. */
+    background: #fffdf7;
   }
 
   .topbar nav {
@@ -2121,7 +2124,8 @@ input[type='number']::-webkit-outer-spin-button {
   }
 
   .content {
-    padding: 26px 16px calc(94px + env(safe-area-inset-bottom));
+    padding: 26px 16px 94px;
+    padding: 26px 16px calc(94px + env(safe-area-inset-bottom, 0px));
   }
 
   /* --- Page heading ---------------------------------------------------- */
@@ -2435,7 +2439,8 @@ input[type='number']::-webkit-outer-spin-button {
     max-width: 100%;
     max-height: 90vh;
     max-height: 90dvh;
-    padding: 18px 16px calc(20px + env(safe-area-inset-bottom));
+    padding: 18px 16px 20px;
+    padding: 18px 16px calc(20px + env(safe-area-inset-bottom, 0px));
     border-radius: 16px 16px 0 0;
     border-left: 0;
     border-right: 0;
@@ -2662,12 +2667,13 @@ input[type='number']::-webkit-outer-spin-button {
     position: fixed;
     inset: auto 0 0 0;
     z-index: 60;
-    height: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom));
-    padding: 0 4px env(safe-area-inset-bottom);
+    height: var(--mobile-nav-height);
+    height: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px));
+    padding: 0 4px;
+    padding: 0 4px env(safe-area-inset-bottom, 0px);
     align-items: stretch;
-    background: rgba(255, 253, 247, .97);
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
+    /* Opaque: see the .topbar note above. */
+    background: #fffdf7;
     border-top: 1px solid #ded9ce;
     box-shadow: 0 -2px 16px rgba(37, 36, 43, .08);
   }

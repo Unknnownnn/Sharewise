@@ -44,9 +44,17 @@ html {
   overflow-x: clip;
 }
 
+/* Firefox before 81 (and a few embedded WebViews) ignore `clip`; without
+   this the page can still scroll sideways. */
+@supports not (overflow-x: clip) {
+  html {
+    overflow-x: hidden;
+  }
+}
+
 body {
   margin: 0;
-  min-width: 320px;
+  min-height: 100vh;
   min-height: 100dvh;
   background: var(--bg);
   color: var(--ink);

@@ -13,6 +13,53 @@
 
 <body>
   <div id="root"></div>
+  <script>
+    /* Mobile diagnostics: only runs when the URL contains ?debug,
+       so normal visitors never see or download it. */
+    (function () {
+      if (!/[?&]debug/.test(location.search)) return;
+
+      function row(label, value) {
+        return label + ': ' + value;
+      }
+
+      function render() {
+        var nav = document.querySelector('.mobile-bottom-nav');
+        var sheet = document.querySelector('link[rel=stylesheet]');
+        var vv = window.visualViewport;
+        var mq = window.matchMedia ? window.matchMedia('(max-width: 1000px)') : null;
+        var coarse = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
+        var box = document.createElement('div');
+        box.setAttribute(
+          'style',
+          'position:fixed;left:8px;right:8px;bottom:8px;z-index:2147483647;' +
+            'background:#1d1d22;color:#fff;font:11px/1.5 monospace;padding:10px 12px;' +
+            'border-radius:8px;white-space:pre-wrap;word-break:break-all;' +
+            'pointer-events:none;max-height:80vh;overflow:hidden;' +
+            'box-shadow:0 6px 24px rgba(0,0,0,.4)',
+        );
+        box.textContent = [
+          row('viewport', window.innerWidth + ' x ' + window.innerHeight + ' (dpr ' + window.devicePixelRatio + ')'),
+          row('screen', screen.width + 'x' + screen.height + ', avail ' + screen.availWidth + 'x' + screen.availHeight),
+          row(
+            'visual viewport',
+            vv ? Math.round(vv.width) + 'x' + Math.round(vv.height) + ', scale ' + vv.scale.toFixed(2) : 'unsupported',
+          ),
+          row('document', document.documentElement.clientWidth + ' wide, scroll ' + document.documentElement.scrollWidth),
+          row('mobile layer', (mq ? mq.matches : 'n/a') + ', pointer coarse ' + (coarse ? coarse.matches : 'n/a')),
+          row('dvh support', CSS.supports ? CSS.supports('height', '100dvh') : 'n/a'),
+          row('clamp support', CSS.supports ? CSS.supports('font-size', 'clamp(1px, 1vw, 2px)') : 'n/a'),
+          row('bottom nav', nav ? getComputedStyle(nav).display + ' / ' + getComputedStyle(nav).position : 'missing'),
+          row('stylesheet', sheet ? sheet.getAttribute('href').split('/').pop() : 'missing'),
+          row('ua', navigator.userAgent),
+        ].join('\n');
+        document.body.appendChild(box);
+      }
+
+      if (document.readyState === 'complete') setTimeout(render, 500);
+      else window.addEventListener('load', function () { setTimeout(render, 500); });
+    })();
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 
