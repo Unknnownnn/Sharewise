@@ -1178,17 +1178,26 @@ function App() {
               <span>{user.username}</span>
             </button>
           ) : (
-            <button className="auth-btn-pill" onClick={() => setAuthModalOpen(true)}>
+            <button
+              className="auth-btn-pill"
+              onClick={() => setAuthModalOpen(true)}
+              aria-label="Sign in to sync your splits"
+            >
               <span className="cloud-icon-spin">☁</span>
               <span>Sign In / Sync</span>
             </button>
           )}
 
-          <button className="profile" onClick={() => setAccountOpen(true)}>
+          <button
+            className="profile"
+            onClick={() => setAccountOpen(true)}
+            aria-label="Open account and groups"
+          >
             <span className="avatar" style={{ backgroundColor: people[0]?.color }}>
               {getInitials(people[0]?.id || 0)}
             </span>
-            <span>{people[0]?.name}</span>⌄
+            <span>{people[0]?.name}</span>
+            <span className="profile-caret" aria-hidden="true">⌄</span>
           </button>
         </div>
       </header>
@@ -1233,7 +1242,9 @@ function App() {
                     )}
                   </strong>
                   <p>
-                    {fileName} <span className="dot">•</span> {status}
+                    <span className="upload-file-name">{fileName}</span>
+                    <span className="dot" aria-hidden="true">•</span>
+                    <span className="upload-status-text">{status}</span>
                   </p>
                 </div>
 
@@ -1299,13 +1310,19 @@ function App() {
                     <div className="screenshot-thumb-card" key={item.id}>
                       <img className="screenshot-thumb-img" src={item.preview} alt={`Screenshot ${idx + 1}`} />
                       <span className="screenshot-badge">
-                        #{idx + 1} {idx === 0 && screenshots.length > 1 ? 'Top' : idx === screenshots.length - 1 && screenshots.length > 1 ? 'End' : ''}
+                        #{idx + 1}
+                        {idx === 0 && screenshots.length > 1 ? (
+                          <span className="screenshot-badge-role"> Top</span>
+                        ) : idx === screenshots.length - 1 && screenshots.length > 1 ? (
+                          <span className="screenshot-badge-role"> End</span>
+                        ) : null}
                       </span>
                       <button
                         type="button"
                         className="screenshot-remove-btn"
                         onClick={() => removeScreenshot(item.id)}
                         title="Remove this screenshot"
+                        aria-label={`Remove screenshot ${idx + 1}`}
                       >
                         ×
                       </button>
@@ -1317,6 +1334,7 @@ function App() {
                             disabled={idx === 0}
                             onClick={() => moveScreenshot(idx, -1)}
                             title="Move earlier in sequence"
+                            aria-label={`Move screenshot ${idx + 1} earlier`}
                           >
                             ◀
                           </button>
@@ -1326,6 +1344,7 @@ function App() {
                             disabled={idx === screenshots.length - 1}
                             onClick={() => moveScreenshot(idx, 1)}
                             title="Move later in sequence"
+                            aria-label={`Move screenshot ${idx + 1} later`}
                           >
                             ▶
                           </button>
@@ -1385,6 +1404,7 @@ function App() {
                             <span>
                               <input
                                 className="inline-item-name"
+                                aria-label="Item name"
                                 value={item.name}
                                 onChange={(event) =>
                                   setItems((current) =>
@@ -1394,6 +1414,7 @@ function App() {
                               />
                               <input
                                 className="inline-detail"
+                                aria-label="Item quantity or unit"
                                 value={item.detail}
                                 placeholder="quantity / unit"
                                 onChange={(event) =>
@@ -1406,22 +1427,31 @@ function App() {
                           </div>
 
                           <div className="selectors">
-                            {people.map((person) => (
-                              <button
-                                key={person.id}
-                                className={`mini-avatar ${(included[item.id] || []).includes(person.id) ? 'selected' : ''}`}
-                                style={{ backgroundColor: person.color }}
-                                onClick={() => toggle(item.id, person.id)}
-                              >
-                                {getInitials(person.id)}
-                              </button>
-                            ))}
+                            {people.map((person) => {
+                              const isIncluded = (included[item.id] || []).includes(person.id)
+                              return (
+                                <button
+                                  key={person.id}
+                                  type="button"
+                                  className={`mini-avatar ${isIncluded ? 'selected' : ''}`}
+                                  style={{ backgroundColor: person.color }}
+                                  onClick={() => toggle(item.id, person.id)}
+                                  title={`${person.name} — ${isIncluded ? 'included' : 'not included'}`}
+                                  aria-label={`${person.name}, ${isIncluded ? 'included in' : 'not included in'} ${item.name}`}
+                                  aria-pressed={isIncluded}
+                                >
+                                  {getInitials(person.id)}
+                                </button>
+                              )
+                            })}
                           </div>
 
                           <input
                             className="inline-amount amount"
                             type="number"
+                            inputMode="decimal"
                             step="any"
+                            aria-label={`Amount for ${item.name}`}
                             value={item.amount}
                             onChange={(event) =>
                               setItems((current) =>
@@ -1454,8 +1484,10 @@ function App() {
                       </span>
                       <input
                         type="number"
+                        inputMode="decimal"
                         step="any"
                         placeholder="—"
+                        aria-label={key === 'other' ? 'Other charges' : key}
                         value={editedCharges[key]}
                         onChange={(event) =>
                           setEditedCharges((current) => ({
@@ -1587,7 +1619,16 @@ function App() {
                     <div className="history-card" key={split.id}>
                       <div
                         className="history-card-header"
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={isExpanded}
                         onClick={() => setExpandedSplitId(isExpanded ? null : split.id)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            setExpandedSplitId(isExpanded ? null : split.id)
+                          }
+                        }}
                       >
                         <div className="history-title-group">
                           <div className="history-title-row">
@@ -2132,8 +2173,9 @@ function App() {
         <button
           className="mobile-nav-item"
           onClick={() => setAccountOpen(true)}
+          aria-label="Open groups and account settings"
         >
-          <span className="mobile-nav-icon" style={{ backgroundColor: people[0]?.color }}>
+          <span className="mobile-nav-avatar" style={{ backgroundColor: people[0]?.color }}>
             {getInitials(people[0]?.id || 0)}
           </span>
           <span>Group</span>
