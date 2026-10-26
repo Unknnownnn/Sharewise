@@ -187,22 +187,24 @@ export default function SplitwiseSendModal({
 
         if (cancelled) return
 
-        setGroups(data.groups)
+        const allGroups = Array.isArray(data.groups) ? data.groups : []
+
+        setGroups(allGroups)
         setCurrentUser(data.current_user)
 
         const savedName = localStorage.getItem(groupKey(groupId))
         const initial =
-          data.groups.find((group) => group.name === preferredGroup) ??
-          data.groups.find((group) => group.name === savedName) ??
-          data.groups.find((group) => normalize(group.name) === normalize(groupName)) ??
-          data.groups[0]
+          allGroups.find((group) => group.name === preferredGroup) ??
+          allGroups.find((group) => group.name === savedName) ??
+          allGroups.find((group) => normalize(group.name) === normalize(groupName)) ??
+          allGroups[0]
 
         setSelectedGroup(initial ? initial.name : '')
 
         // Payer preferences are stored as Splitwise user ids, because names
         // can change and can collide.
         const savedPayerId = localStorage.getItem(PAYER_KEY)
-        const memberIds = initial ? initial.members.map((member) => member.id) : []
+        const memberIds = (initial?.members ?? []).map((member) => member.id)
         const preferredPayerId =
           savedPayerId && memberIds.includes(savedPayerId)
             ? savedPayerId

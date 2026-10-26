@@ -74,6 +74,46 @@ type SplitwiseGroupConfig = {
 
 type SplitwiseConfig = Record<string, SplitwiseGroupConfig>
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/**
+ * Older builds (and hand-edited settings) stored the per-person map under
+ * `mapping` instead of `members`. Normalising on load keeps the mapping modal
+ * from throwing on data saved by a previous version.
+ */
+const normalizeSplitwiseConfig = (value: unknown): SplitwiseConfig => {
+  if (!isRecord(value)) return {}
+
+  const next: SplitwiseConfig = {}
+
+  for (const [groupId, entry] of Object.entries(value)) {
+    if (!isRecord(entry)) continue
+
+    const rawMembers = isRecord(entry.members)
+      ? entry.members
+      : isRecord(entry.mapping)
+        ? entry.mapping
+        : {}
+
+    const members: Record<number, string> = {}
+
+    for (const [personId, memberId] of Object.entries(rawMembers)) {
+      const parsedId = Number(personId)
+      if (!Number.isFinite(parsedId)) continue
+      if (typeof memberId !== 'string' && typeof memberId !== 'number') continue
+      members[parsedId] = String(memberId)
+    }
+
+    next[groupId] = {
+      groupName: typeof entry.groupName === 'string' ? entry.groupName : '',
+      members,
+    }
+  }
+
+  return next
+}
+
 type SyncedData = {
   groups?: Group[]
   activeGroupId?: string
@@ -351,29 +391,125 @@ function extractTotal(source: Record<string, unknown>): number | null {
   return null
 }
 
+/**
+ * Saved data can predate the current shape (older builds stored no `people`
+ * on a group, no `charges`/`shares` on a split, and so on). Rendering such a
+ * blob used to throw and blank the whole app, so everything read from storage
+ * is repaired here instead of trusting the cast.
+ */
+const normalizePeople = (value: unknown): Person[] => {
+  if (!Array.isArray(value)) return []
+
+  return value.filter(isRecord).map((person, index) => ({
+    id: typeof person.id === 'number' && Number.isFinite(person.id) ? person.id : index + 1,
+    name:
+      typeof person.name === 'string' && person.name.trim() ? person.name : `Person ${index + 1}`,
+    color:
+      typeof person.color === 'string' && person.color ? person.color : colors[index % colors.length],
+    initials: typeof person.initials === 'string' ? person.initials : undefined,
+  }))
+}
+
+const normalizeGroups = (value: unknown): Group[] => {
+  if (!Array.isArray(value)) return []
+
+  const groups = value.filter(isRecord).map((group, index) => ({
+    id: typeof group.id === 'string' && group.id ? group.id : `group-${index}`,
+    name: typeof group.name === 'string' && group.name.trim() ? group.name : 'Group',
+    isDefault: group.isDefault === true,
+    people: normalizePeople(group.people),
+  }))
+
+  if (groups.length > 0 && !groups.some((group) => group.isDefault)) {
+    groups[0].isDefault = true
+  }
+
+  return groups
+}
+
+const toNullableNumber = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null
+
+const normalizeHistory = (value: unknown): FinalizedSplit[] => {
+  if (!Array.isArray(value)) return []
+
+  return value.filter(isRecord).map((split, index) => {
+    const items = (Array.isArray(split.items) ? split.items : [])
+      .filter(isRecord)
+      .map((item, itemIndex) => ({
+        id: typeof item.id === 'number' && Number.isFinite(item.id) ? item.id : itemIndex + 1,
+        name: typeof item.name === 'string' ? item.name : 'Item',
+        detail: typeof item.detail === 'string' ? item.detail : '',
+        amount: toNullableNumber(item.amount) ?? 0,
+      }))
+
+    const shares = (Array.isArray(split.shares) ? split.shares : [])
+      .filter(isRecord)
+      .map((share, shareIndex) => ({
+        personId:
+          typeof share.personId === 'number' && Number.isFinite(share.personId)
+            ? share.personId
+            : shareIndex + 1,
+        name: typeof share.name === 'string' ? share.name : `Person ${shareIndex + 1}`,
+        initials: typeof share.initials === 'string' ? share.initials : '',
+        color: typeof share.color === 'string' && share.color ? share.color : colors[shareIndex % colors.length],
+        amount: toNullableNumber(share.amount) ?? 0,
+      }))
+
+    const charges = isRecord(split.charges) ? split.charges : {}
+
+    return {
+      id: typeof split.id === 'string' && split.id ? split.id : `split-${index}`,
+      title: typeof split.title === 'string' && split.title.trim() ? split.title : 'Untitled split',
+      date: typeof split.date === 'string' ? split.date : new Date().toISOString(),
+      displayDate: typeof split.displayDate === 'string' ? split.displayDate : 'Unknown date',
+      groupId: typeof split.groupId === 'string' && split.groupId ? split.groupId : 'default',
+      groupName: typeof split.groupName === 'string' && split.groupName ? split.groupName : 'Group',
+      fileName: typeof split.fileName === 'string' ? split.fileName : undefined,
+      total: toNullableNumber(split.total) ?? 0,
+      itemsCount:
+        typeof split.itemsCount === 'number' && Number.isFinite(split.itemsCount)
+          ? split.itemsCount
+          : items.length,
+      items,
+      charges: {
+        tax: toNullableNumber(charges.tax),
+        delivery: toNullableNumber(charges.delivery),
+        discount: toNullableNumber(charges.discount),
+        other: toNullableNumber(charges.other),
+        subtotal: toNullableNumber(charges.subtotal),
+        total: toNullableNumber(charges.total),
+      },
+      included: isRecord(split.included) ? (split.included as Record<number, number[]>) : {},
+      shares,
+    }
+  })
+}
+
 const initialGroups = (): Group[] => {
   const saved = localStorage.getItem('smartsplit-groups')
   if (saved) {
     try {
-      const parsed = JSON.parse(saved) as Group[]
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        if (!parsed.some((g) => g.isDefault)) {
-          parsed[0].isDefault = true
-        }
-        return parsed
-      }
+      const parsed = normalizeGroups(JSON.parse(saved))
+      if (parsed.length > 0) return parsed
     } catch {
       // fallback
     }
   }
 
-  const legacyPeopleStr = localStorage.getItem('smartsplit-people')
-  const legacyPeople = legacyPeopleStr
-    ? (JSON.parse(legacyPeopleStr) as Person[])
-    : [
-      { id: 1, name: 'John Doe', color: colors[0] },
-      { id: 2, name: 'Jane Doe', color: colors[1] },
-    ]
+  let legacyPeople: Person[] = [
+    { id: 1, name: 'John Doe', color: colors[0] },
+    { id: 2, name: 'Jane Doe', color: colors[1] },
+  ]
+
+  try {
+    const legacyPeopleStr = localStorage.getItem('smartsplit-people')
+    const parsed = legacyPeopleStr ? normalizePeople(JSON.parse(legacyPeopleStr)) : []
+    if (parsed.length > 0) legacyPeople = parsed
+  } catch {
+    // Keep the defaults below.
+  }
+
   const legacyGroupName = localStorage.getItem('smartsplit-group') || 'Housemates'
 
   return [
@@ -463,8 +599,7 @@ function App() {
     const saved = localStorage.getItem('smartsplit-history')
     if (saved) {
       try {
-        const parsed = JSON.parse(saved)
-        if (Array.isArray(parsed)) return parsed as FinalizedSplit[]
+        return normalizeHistory(JSON.parse(saved))
       } catch {
         // ignore
       }
@@ -490,10 +625,7 @@ function App() {
   const [splitwiseConfig, setSplitwiseConfig] = useState<SplitwiseConfig>(() => {
     try {
       const saved = localStorage.getItem('smartsplit-splitwise')
-      if (saved) {
-        const parsed = JSON.parse(saved) as SplitwiseConfig
-        if (parsed && typeof parsed === 'object') return parsed
-      }
+      if (saved) return normalizeSplitwiseConfig(JSON.parse(saved))
     } catch {
       // Ignore a corrupted settings blob and start clean.
     }
@@ -523,19 +655,23 @@ function App() {
           localStorage.setItem('smartsplit-user', JSON.stringify(payload.user))
           if (payload.data) {
             if (Array.isArray(payload.data.groups) && payload.data.groups.length > 0) {
-              setGroups(payload.data.groups)
-              localStorage.setItem('smartsplit-groups', JSON.stringify(payload.data.groups))
+              const syncedGroups = normalizeGroups(payload.data.groups)
+              if (syncedGroups.length > 0) {
+                setGroups(syncedGroups)
+                localStorage.setItem('smartsplit-groups', JSON.stringify(syncedGroups))
+              }
             }
             if (payload.data.activeGroupId) {
               setActiveGroupId(payload.data.activeGroupId)
               localStorage.setItem('smartsplit-active-group-id', payload.data.activeGroupId)
             }
             if (Array.isArray(payload.data.history)) {
-              setHistory(payload.data.history)
-              localStorage.setItem('smartsplit-history', JSON.stringify(payload.data.history))
+              const syncedHistory = normalizeHistory(payload.data.history)
+              setHistory(syncedHistory)
+              localStorage.setItem('smartsplit-history', JSON.stringify(syncedHistory))
             }
             if (payload.data.splitwise && typeof payload.data.splitwise === 'object') {
-              setSplitwiseConfig(payload.data.splitwise)
+              setSplitwiseConfig(normalizeSplitwiseConfig(payload.data.splitwise))
             }
           }
           setSyncStatus('synced')
@@ -1677,6 +1813,9 @@ function App() {
                                   <strong>{money(it.amount)}</strong>
                                 </div>
                               ))}
+                              {split.items.length === 0 && (
+                                <p className="muted">No item details were saved for this split.</p>
+                              )}
                             </div>
 
                             <div className="history-extras-summary">
@@ -1709,6 +1848,9 @@ function App() {
                                   <span className="history-share-val">{money(share.amount)}</span>
                                 </div>
                               ))}
+                              {split.shares.length === 0 && (
+                                <p className="muted">No share breakdown was saved for this split.</p>
+                              )}
                             </div>
                           </div>
 

@@ -136,11 +136,14 @@ export default function SplitwiseMappingModal({
 
   if (!open) return null
 
+  // `value` can come from settings saved by an older build, so never assume
+  // the members map exists.
+  const storedMembers = value.members || {}
   const activeGroup = groups.find((group) => group.name === selected) || null
   const members = activeGroup?.members || []
 
   const setMember = (personId: number, memberId: string) => {
-    const next = { ...value.members }
+    const next = { ...storedMembers }
 
     if (memberId === AUTO) {
       delete next[personId]
@@ -158,7 +161,7 @@ export default function SplitwiseMappingModal({
     // Member ids are scoped to a Splitwise group, so drop ids that do not
     // exist in the newly selected group.
     const nextMembers = Object.fromEntries(
-      Object.entries(value.members).filter(([, memberId]) => validIds.has(memberId)),
+      Object.entries(storedMembers).filter(([, memberId]) => validIds.has(memberId)),
     ) as Record<number, string>
 
     setSelected(nextName)
@@ -166,10 +169,10 @@ export default function SplitwiseMappingModal({
   }
 
   const mappedCount = people.filter((person) => {
-    const memberId = value.members[person.id]
+    const memberId = storedMembers[person.id]
     return memberId && memberId !== 'skip'
   }).length
-  const skippedCount = people.filter((person) => value.members[person.id] === 'skip').length
+  const skippedCount = people.filter((person) => storedMembers[person.id] === 'skip').length
 
   return (
     <div className="modal-backdrop mapping-backdrop" onClick={onClose}>
@@ -214,7 +217,7 @@ export default function SplitwiseMappingModal({
 
             <div className="mapping-rows">
               {people.map((person) => {
-                const stored = value.members[person.id] || AUTO
+                const stored = storedMembers[person.id] || AUTO
                 const resolved = members.some((member) => member.id === stored) ? stored : AUTO
 
                 return (
